@@ -1,5 +1,46 @@
 # 3SACH Vendor Portal — Process Flow
 
+---
+
+## Business Overview (Simple View)
+
+```mermaid
+flowchart LR
+    classDef store    fill:#DBEAFE,stroke:#3B82F6,color:#1E3A5F,font-weight:bold
+    classDef vendor   fill:#D1FAE5,stroke:#10B981,color:#064E3B,font-weight:bold
+    classDef portal   fill:#EDE9FE,stroke:#7C3AED,color:#2E1065,font-weight:bold
+    classDef internal fill:#FEF3C7,stroke:#F59E0B,color:#451A03,font-weight:bold
+    classDef decision fill:#FFF,stroke:#6B7280,color:#111827
+
+    S1([🏪 Cửa hàng\ntạo RFQ\ntrên Odoo]):::store
+    S2([📧 Gửi RFQ\ncho nhà cung cấp]):::store
+
+    V1([✅ Nhà cung cấp\nxác nhận PO\ntrên Portal]):::vendor
+    V2([📦 Điền số lượng\nvà ngày giao\ntrên Portal]):::vendor
+    V3([🚚 Giao hàng\nthực tế\ncho kho]):::vendor
+    V4([✍️ Ký xác nhận\ntrên Portal\nvà tải PDF]):::vendor
+
+    P1{{Portal tự động\nkhoá DO\nlúc 23:00}}:::portal
+    P2{{Portal tạo\nPDF có chữ ký\nvà gửi email}}:::portal
+
+    I1([🔍 Nội bộ\nkiểm tra\nsố lượng]):::internal
+    I2([✔️ Xác nhận\nnhập kho\ntrên Odoo]):::internal
+
+    S1 --> S2 --> V1
+    V1 --> V2
+    V2 --> P1
+    P1 --> V3
+    V3 --> V4
+    V4 --> P2
+    P2 --> I1
+    I1 --> I2
+    I2 --> DONE([🎉 Hoàn tất]):::store
+```
+
+> **Màu sắc:** 🔵 Cửa hàng &nbsp;|&nbsp; 🟢 Nhà cung cấp &nbsp;|&nbsp; 🟣 Hệ thống Portal &nbsp;|&nbsp; 🟡 Nội bộ 3Sach
+
+---
+
 ## Full Purchase Workflow: RFQ → PO Confirm → Delivery → Receipt
 
 ```mermaid
