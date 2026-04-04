@@ -5,7 +5,7 @@
 
 ## Project Summary
 
-An independent bilingual (Vietnamese + English) web portal serving two types of users: **vendors** and **portal admins**. Vendors log in using their Odoo Vendor ID, view their confirmed Purchase Orders, update actual delivered quantities on receipts across multiple sessions, draw a signature to confirm delivery, and download a signed delivery PDF. Portal admins share the same interface but have additional access to view all vendors, all POs and receipts across the system, trigger the Odoo sync manually, and download any vendor's signed PDF. Admins can also unlock signed receipts directly in the portal. The portal runs on a separate VM from Odoo and integrates exclusively via Odoo's XML-RPC API using a dedicated service account. Internal team and vendor both receive email notifications on validation. All email is delivered via AWS SES.
+An independent bilingual (Vietnamese + English) web portal serving two types of users: **vendors** and **portal admins**. Vendors log in using their Odoo Vendor ID, confirm or reject Sent RFQs, edit Delivery Orders (quantities and delivery date), digitally sign and print DOs, and track PO statuses through to final receipt confirmation. The portal distinguishes between the vendor's Delivery Order (what they plan to deliver) and the store's Receipt (what they actually received in Odoo) — giving vendors visibility into both sides. Portal admins share the same interface but have additional access to view all vendors, all POs and DOs across the system, trigger the Odoo sync manually, unlock signed DOs, and download any vendor's signed PDF. The portal runs on a separate VM from Odoo and integrates exclusively via Odoo's XML-RPC API (portal → Odoo) and webhooks (Odoo → portal) using a dedicated service account. **Vendors only access the portal; stores only access Odoo.** All email is delivered via AWS SES.
 
 ---
 
@@ -21,13 +21,22 @@ An independent bilingual (Vietnamese + English) web portal serving two types of 
 | Account provisioning | Auto from Odoo partners where `supplier_rank > 0` |
 | Portal language | Vietnamese + English (bilingual, user-switchable) |
 | HTTP client (frontend) | Native `fetch` API — no axios or third-party HTTP lib |
-| PO statuses visible | Sent RFQ (`sent`), Confirmed (`purchase`), Cancelled (`cancel`), Done (`done`) — Draft (`draft`) is not shown |
-| Receipt statuses visible | Ready (`assigned`) and Done (`done`) only |
-| qty_done updates | Multiple updates allowed before validation |
-| Backorder handling | Vendor submits qty only — admin validates and decides in Odoo |
-| Post-validation locking | Receipt locked after vendor signs — portal admin can unlock directly in the portal |
+| Portal PO statuses | Waiting (`sent`), Confirmed (`purchase`), Cancelled (`cancel`), Verified (receipt done, qty match), Discrepancy (receipt done, qty mismatch) — Draft (`draft`) is not shown |
+| Odoo PO states (unchanged) | RFQ / RFQ Sent / Purchase Order / Cancelled — portal does not modify Odoo's base behaviour |
+| DO per PO | Exactly 1 DO auto-created per confirmed PO — vendor cannot create additional DOs |
+| DO editing | Vendor edits delivery date + quantities (qty <= ordered qty from PO) |
+| DO locking trigger | Vendor digital signature only — no 23:00 cutoff |
+| DO signing | Digital signature on portal locks the DO, pushes delivery date + set quantities to Odoo Receipt |
+| DO printing | After signing, vendor can print DO PDF (includes signature) multiple times |
+| Receipt confirmation | Store confirms Receipt in Odoo — sets final qty_done. Portal receives webhook and shows Verified or Discrepancy |
+| Vendor PO confirmation | Vendor confirms Sent RFQ via portal -> portal calls `button_confirm` on `purchase.order` in Odoo |
+| Vendor RFQ rejection | Vendor rejects Sent RFQ via portal -> portal calls `button_cancel` on `purchase.order` in Odoo + email to store |
+| Post-signature locking | DO locked after vendor signs — portal admin can unlock directly in the portal (vendor notified by email) |
+| Data retention | 24 months — POs older than 24 months are permanently deleted from portal DB. Applies to all statuses |
+| Data export | Vendors can export receipt data for end-of-period invoicing and reconciliation |
+| Backorder handling | Vendor submits qty only — store validates and decides in Odoo |
 | Admin role | Separate `admin_users` table, password set via env variable initially |
-| Admin capabilities | View all vendors, trigger sync, view all POs/receipts, unlock receipts, download any PDF |
+| Admin capabilities | View all vendors, trigger sync, view all POs/DOs, unlock signed DOs, download any PDF |
 | Admin UI | Same layout as vendor portal with additional admin menu items |
 | PDF content | Odoo delivery slip + vendor-signed confirmation page |
 | Signature capture | `signature_pad.js` → PNG sent to backend |
@@ -67,7 +76,8 @@ Nginx (reverse proxy + TLS termination)
                         ├── AWS SES     (all outbound email)
                         │
                         └── Odoo 16 CE (separate VM)
-                              XML-RPC : data read/write
+                              XML-RPC  : portal → Odoo (read/write)
+                              Webhook  : Odoo → portal (receipt validated)
                               HTTP session : PDF download
 ```
 
@@ -93,15 +103,31 @@ Nginx (reverse proxy + TLS termination)
 4. **Partner deactivated in Odoo:** sets `is_active = FALSE` — vendor can no longer log in
 5. Partners with no email are skipped and logged for manual follow-up
 
-### Receipt update flow
-1. Vendor browses their PO list (filtered to `purchase` and `done` states), searchable by PO number or date range
-2. Vendor opens a PO and sees linked receipts in `assigned` or `done` state
-3. Vendor opens a ready receipt and enters actual delivered quantities — saves are incremental, multiple updates are allowed
-4. When ready, vendor proceeds to the signature step, draws their signature, and confirms
-5. Backend verifies ownership, stores the signature PNG, fetches the Odoo delivery slip PDF via HTTP session, appends a signed confirmation page (WeasyPrint + pypdf), and marks the receipt as **locked** in the portal database
-6. Vendor downloads the final merged PDF
-7. AWS SES sends a confirmation email to the vendor and an alert email to the internal team
-8. The receipt is now read-only in the portal — only an Odoo-side admin action can unlock it (the portal checks a `locked` flag in its own DB; it does not push a lock back to Odoo)
+### Delivery Order (DO) flow
+1. When a vendor confirms a PO, the portal auto-creates exactly 1 DO linked to the PO
+2. Vendor edits the DO: sets delivery date and quantities per product line (qty must be <= ordered qty from PO)
+3. Saves are incremental — vendor can save and come back multiple times while the DO is in Draft state
+4. When ready, vendor clicks "Sign DO", draws their digital signature, and confirms
+5. Backend verifies ownership, stores the signature PNG, generates the signed DO PDF (WeasyPrint + pypdf), and marks the DO as **locked** in the portal database
+6. Backend pushes delivery date + set quantities to the corresponding Odoo Receipt via XML-RPC (these become pre-filled quantities in the Receipt, not yet `qty_done`)
+7. Vendor can print the signed DO PDF multiple times — this is the document they bring to the store
+8. The DO is now read-only in the portal — only a portal admin can unlock it (vendor is notified by email on unlock)
+
+### Receipt confirmation flow (store-side, reflected on portal)
+1. Vendor delivers goods to the store with the printed DO (2 paper copies, both parties sign, each keeps 1)
+2. Store reviews the Receipt in Odoo — can adjust the pre-filled set quantities before confirming
+3. Store confirms the Receipt in Odoo — `qty_done` is finalized
+4. Odoo sends a webhook to the portal notifying that the Receipt is validated
+5. Portal compares vendor's DO quantities against the store's confirmed `qty_done`:
+   - **All lines match exactly** → PO status on portal becomes **Verified**
+   - **Any line differs** → PO status on portal becomes **Discrepancy**
+6. Portal sends an email to the vendor with a comparison of delivered vs received quantities + PDF attachment
+7. Vendor can see both their DO quantities and the store's final received quantities on the portal
+
+### Nightly fallback sync
+- A scheduled job runs at 23:00 daily to catch any missed webhooks
+- Checks all Receipts in Odoo that have moved to `done` state but are not yet reflected on the portal
+- Updates portal statuses accordingly (Verified or Discrepancy)
 
 ---
 
@@ -136,20 +162,28 @@ This section describes the portal's behaviour in plain business terms, intended 
 
 **Who can see what:** Each vendor sees only their own Purchase Orders. It is technically impossible for a vendor to view another vendor's data.
 
-**Which POs are visible:**
-- **Sent RFQ** — RFQ has been sent to the vendor and is awaiting confirmation. Vendor can confirm it directly in the portal.
-- **Confirmed** — PO has been approved and is active
-- **Cancelled** — PO has been cancelled (shown for vendor awareness, read-only)
-- **Done** — all receipts have been fully processed
+**Which POs are visible (portal statuses):**
+- **Waiting** — RFQ has been sent to the vendor and is awaiting confirmation. Vendor can confirm or reject it.
+- **Confirmed** — PO has been approved, DO has been created. Vendor can edit and sign the DO.
+- **Cancelled** — PO has been cancelled (vendor rejected, or store cancelled). Read-only.
+- **Verified** — Store confirmed receipt, quantities match vendor's DO exactly. Read-only.
+- **Discrepancy** — Store confirmed receipt, quantities differ from vendor's DO. Read-only, informational for reconciliation.
 
-Draft RFQs are not shown.
+Draft RFQs are not shown. Vendors can view PO data for **24 months** from creation date. Older POs are permanently deleted.
 
 **Confirming a Sent RFQ:**
-- A "Confirm PO" button is shown on Sent RFQ detail pages
+- A "Confirm PO" button is shown on Waiting PO detail pages
 - Vendor clicks "Confirm PO" → portal calls `button_confirm` on `purchase.order` via XML-RPC using the service account
-- Odoo updates the PO state from `sent` to `purchase` and generates the linked Delivery Order / Receipt
-- The portal reflects the new `purchase` state immediately after the call succeeds
-- Once confirmed, the button is no longer shown — the record is now read-only on the PO level
+- Odoo updates the PO state from `sent` to `purchase` and generates the linked Receipt
+- The portal auto-creates a DO for this PO and reflects the new Confirmed status immediately
+- Once confirmed, the button is no longer shown — the PO-level record is now read-only
+
+**Rejecting a Sent RFQ:**
+- A "Reject" button is shown alongside the "Confirm PO" button on Waiting PO detail pages
+- Vendor clicks "Reject" → portal calls `button_cancel` on `purchase.order` via XML-RPC
+- Odoo updates the PO state from `sent` to `cancel`
+- Portal sends an email notification to the store informing them the RFQ was rejected
+- The store must create a new RFQ if they wish to re-order — rejection is final
 
 **Searching and filtering:**
 - Vendor can search by PO number (e.g. typing "PO004" filters the list instantly)
@@ -160,76 +194,106 @@ Draft RFQs are not shown.
 
 ---
 
-### 3. Delivery Confirmation Workflow
+### 3. Delivery Order & Delivery Workflow
 
-This is the core business process of the portal. It replaces the need for vendors to call or email to confirm delivery quantities.
+This is the core business process of the portal. It replaces the need for vendors to call or email to confirm delivery quantities. The portal separates the **Delivery Order (DO)** — what the vendor plans to deliver — from the **Receipt** — what the store actually receives in Odoo.
 
 ```
-Purchase Order confirmed in Odoo
+Purchase Order confirmed on Portal
          │
          ▼
-Vendor logs into portal
+DO auto-created (1 per PO)
          │
          ▼
-Vendor opens the linked Receipt (status: Ready)
+Vendor edits DO: delivery date + quantities per line
+(qty must be <= ordered qty; can save multiple times)
          │
          ▼
-Vendor enters actual delivered quantity for each product line
-(can save and come back multiple times — nothing is final yet)
+Vendor clicks "Sign DO"
          │
          ▼
-Vendor clicks "Sign & Confirm"
+Vendor draws their digital signature on screen
          │
          ▼
-Vendor draws their signature on screen
+DO is locked — delivery date + set quantities pushed to Odoo Receipt
+Signed DO PDF generated (can be printed multiple times)
          │
          ▼
-Portal generates a signed PDF (Odoo delivery slip + confirmation page with signature)
-Receipt is locked — no further edits possible from the portal
+Vendor prints DO, brings goods + paper DO to store
          │
-         ├──▶ Vendor receives confirmation email with PDF attached
+         ▼
+Store receives goods, both parties sign 2 paper copies (each keeps 1)
          │
-         └──▶ Internal team receives alert email with vendor name, PO ref, link to Odoo
-                         │
-                         ▼
-              Internal team reviews quantities in Odoo
-                         │
-                         ▼
-              Admin validates (or adjusts) the receipt in Odoo
-              Admin decides on backorder if quantities are short
+         ▼
+Store reviews Receipt in Odoo (can adjust quantities)
+         │
+         ▼
+Store confirms Receipt in Odoo — qty_done finalized
+         │
+         ├──▶ Webhook notifies portal
+         │         │
+         │         ▼
+         │    Portal compares vendor DO qty vs store qty_done
+         │         │
+         │         ├── Match → PO status: Verified
+         │         └── Mismatch → PO status: Discrepancy
+         │
+         └──▶ Email to vendor: delivered vs received comparison + PDF
 ```
 
 **Key points for stakeholders:**
-- The vendor only enters quantities and signs — they do not trigger any stock movement in Odoo
-- All stock validation decisions remain with the internal team in Odoo
-- The signed PDF serves as the vendor's formal delivery confirmation document
-- Once signed, the portal record is locked to preserve the integrity of the confirmation
+- The vendor edits the DO and signs — they do not trigger any stock movement in Odoo
+- The DO pushes **set quantities** (pre-filled) to the Odoo Receipt, but these are not `qty_done` until the store confirms
+- All stock validation decisions remain with the store in Odoo — the store can adjust quantities before confirming
+- The signed DO PDF is the vendor's formal delivery document — they print it and bring it to the store
+- The portal shows both the vendor's DO quantities and the store's final received quantities for full transparency
+- Discrepancy status is informational — for end-of-period reconciliation between vendor and store
 
 ---
 
-### 4. Receipt States and What They Mean
+### 4. DO States and PO Status Lifecycle
 
-| State in Portal | State in Odoo | What the vendor can do |
-|---|---|---|
-| **Ready** | `assigned` | Enter qty_done, save multiple times, sign |
-| **Signed / Locked** | `assigned` (pending admin) | View only, download PDF |
-| **Done** | `done` | View only, download PDF |
+**DO States (portal-managed):**
 
-**Note:** A receipt remains in Odoo's `assigned` state after the vendor signs — it moves to `done` only after the internal team validates it in Odoo. The vendor sees the "Signed" status on the portal, which is a portal-level flag, not an Odoo state.
+| DO State | What the vendor can do |
+|---|---|
+| **Draft** | Edit delivery date + quantities, save multiple times |
+| **Signed / Locked** | Read-only, print DO PDF (multiple times) |
+
+**PO Status Lifecycle (portal-managed, derived from Odoo + DO state):**
+
+| Portal PO Status | Odoo PO State | Trigger | Vendor can do |
+|---|---|---|---|
+| **Waiting** | `sent` | Store sends RFQ | Confirm or Reject |
+| **Confirmed** | `purchase` | Vendor confirms PO | Edit & sign DO |
+| **Cancelled** | `cancel` | Vendor rejects or store cancels | Read-only |
+| **Verified** | `purchase` (receipt `done`, qty match) | Store confirms receipt, all quantities match DO | Read-only, export data |
+| **Discrepancy** | `purchase` (receipt `done`, qty mismatch) | Store confirms receipt, any quantity differs from DO | Read-only, export data |
+
+**Note:** Verified and Discrepancy correspond to Odoo's `purchase` state — the portal derives these by comparing the vendor's signed DO quantities against the store's confirmed `qty_done` values. Odoo's base behaviour is never modified.
+
+**Cancellation rules:**
+- A PO can only be cancelled if the linked Receipt has **not** been confirmed by the store (no `qty_done`)
+- If the Receipt has already been confirmed in Odoo, cancellation is blocked — the portal shows a warning and the vendor must contact procurement to resolve
 
 ---
 
 ### 5. Post-Signature Locking and Unlocking
 
-**Why receipts are locked after signing:** Once a vendor confirms delivery quantities with their signature, that record becomes the official delivery confirmation. Allowing edits after signing would undermine the document's legal and operational value.
+**Why DOs are locked after signing:** Once a vendor confirms delivery quantities with their digital signature, the DO becomes the official delivery document. The signed PDF is what the vendor prints and brings to the store. Allowing edits after signing would undermine the document's integrity.
 
 **What "locked" means in practice:**
-- All quantity fields on the receipt are read-only in the portal
-- The signed PDF remains downloadable at any time
+- All quantity and date fields on the DO are read-only in the portal
+- The signed DO PDF remains downloadable and printable at any time
 - The vendor cannot re-sign or submit a new signature
+- The delivery date and set quantities have already been pushed to Odoo's Receipt
 
 **Unlocking process:**
-If quantities were entered incorrectly and the vendor needs to resubmit, a portal admin can unlock the receipt directly from the admin section (`/admin/vendors/:id`). Unlocking removes the portal lock record and notifies no one automatically — the admin should communicate with the vendor directly. Once unlocked, the vendor can update quantities and re-sign. The unlock action is logged in `receipt_locks` (unlocked_at, unlocked_by).
+If quantities were entered incorrectly and the vendor needs to resubmit, a portal admin can unlock the DO directly from the admin section (`/admin/vendors/:id`). Unlocking:
+1. Removes the portal lock record
+2. Sends an email notification to the vendor informing them the DO has been unlocked
+3. The vendor can then update quantities/date and re-sign
+4. The unlock action is logged in `do_locks` (unlocked_at, unlocked_by)
 
 ---
 
@@ -239,8 +303,10 @@ If quantities were entered incorrectly and the vendor needs to resubmit, a porta
 |---|---|---|---|
 | New vendor account created | Vendor | Vietnamese (default) | Vendor ID + set-password link |
 | Password reset requested | Vendor | Vendor's preferred language | Reset link (24h expiry) |
-| Receipt signed by vendor | Vendor | Vendor's preferred language | Confirmation + PDF attachment |
-| Receipt signed by vendor | Internal team | English | Vendor name, PO ref, receipt ref, link to Odoo |
+| Vendor confirms PO | Store | Vietnamese | PO confirmed notification |
+| Vendor rejects RFQ | Store | Vietnamese | RFQ rejected by vendor, cancelled in Odoo |
+| Store confirms receipt | Vendor | Vendor's preferred language | Comparison: delivered vs received quantities + PDF attachment |
+| DO unlocked by admin | Vendor | Vendor's preferred language | Notification that DO has been unlocked for re-editing |
 
 ---
 
@@ -248,12 +314,14 @@ If quantities were entered incorrectly and the vendor needs to resubmit, a porta
 
 It is equally important for stakeholders to understand the boundaries of the portal:
 
-- **Does not validate stock movements** — all Odoo validation is done by the internal team
-- **Does not create Purchase Orders** — vendors can confirm a Sent RFQ but cannot create, edit lines, or cancel a PO
-- **Does not handle invoicing or payments** — outside the scope of this portal
-- **Does not manage backorders** — the internal team decides on backorders in Odoo after reviewing vendor-submitted quantities
+- **Does not validate stock movements** — all Odoo validation is done by the store in Odoo
+- **Does not create Purchase Orders** — vendors can confirm or reject a Sent RFQ but cannot create POs or edit PO lines
+- **Does not handle invoicing or payments** — outside the scope of this portal (vendors can export data for their own invoicing)
+- **Does not manage backorders** — the store decides on backorders in Odoo after reviewing quantities
+- **Does not modify Odoo's base behaviour** — Odoo states and workflows remain unchanged
 - **Does not expose any Odoo credentials to vendors** — vendors have no access to Odoo, directly or indirectly
 - **Does not allow vendors to see other vendors' data** — enforced at every layer of the system
+- **Does not give stores access to the portal** — stores only interact through Odoo
 
 ---
 
@@ -327,14 +395,16 @@ vendor-portal/
 ### Key design decisions
 - **Singleton OdooClient:** authenticates once at startup, reuses the `uid` for all calls. Reconnects automatically on connection drop
 - **VendorScopedOdooClient:** a wrapper that injects `[['partner_id', '=', partner_id]]` into every domain filter at the service layer — no route handler can accidentally omit vendor scoping
-- **Sync job scheduling:** APScheduler running inside the FastAPI process, every 6 hours. Can also be triggered manually via an internal admin endpoint
+- **Sync job scheduling:** APScheduler running inside the FastAPI process, every 6 hours for vendor profiles. Can also be triggered manually via an internal admin endpoint
+- **Nightly fallback sync:** A 23:00 daily job checks for Receipts that moved to `done` in Odoo but are not yet reflected on the portal — catches any missed webhooks
+- **Webhook receiver:** An endpoint (`POST /api/webhooks/odoo/receipt-validated`) receives notifications from Odoo when a `stock.picking` is validated. Requires a lightweight Odoo automation module (`base_automation` server action) to call this endpoint on Receipt state change to `done`
 - **PDF session:** a separate `requests.Session()` authenticated via `/web/session/authenticate` is maintained for PDF downloads — the XML-RPC `uid` cannot access `/report/pdf/` endpoints
 
 ### Odoo models in scope
 | Model | Purpose | Key fields |
 |---|---|---|
 | `res.partner` | Vendor profile sync | `id`, `name`, `email`, `company_name`, `phone`, `supplier_rank` |
-| `purchase.order` | PO list, detail, and vendor confirmation | `name`, `partner_id`, `state`, `date_order`, `amount_total`, `order_line`, `picking_ids` — `button_confirm` called on vendor action |
+| `purchase.order` | PO list, detail, confirmation, and rejection | `name`, `partner_id`, `state`, `date_order`, `amount_total`, `order_line`, `picking_ids` — `button_confirm` or `button_cancel` called on vendor action |
 | `purchase.order.line` | PO line items | `product_id`, `name`, `product_qty`, `qty_received`, `price_unit` |
 | `stock.picking` | Receipt header | `name`, `state`, `scheduled_date`, `origin`, `move_line_ids` |
 | `stock.move.line` | Receipt line items | `product_id`, `product_uom_qty`, `qty_done`, `lot_id`, `state` |
@@ -402,15 +472,38 @@ vendor-portal/
 | `expires_at` | timestamp | 24 hours from creation |
 | `used` | boolean | marked TRUE after use |
 
-**`receipt_locks`**
+**`delivery_orders`**
+| Column | Type | Notes |
+|---|---|---|
+| `id` | serial PK | internal portal DO ID |
+| `po_odoo_id` | integer, unique | Odoo `purchase.order.id` this DO belongs to |
+| `picking_id` | integer | Odoo `stock.picking.id` (linked Receipt) |
+| `vendor_id` | FK → vendor_users | vendor who owns this DO |
+| `delivery_date` | date | vendor-set planned delivery date |
+| `status` | varchar | `draft` or `signed` |
+| `created_at` | timestamp | when DO was auto-created (on PO confirm) |
+| `updated_at` | timestamp | last edit by vendor |
+
+**`delivery_order_lines`**
 | Column | Type | Notes |
 |---|---|---|
 | `id` | serial PK | |
-| `picking_id` | integer, unique | Odoo `stock.picking.id` |
+| `do_id` | FK → delivery_orders | parent DO |
+| `product_id` | integer | Odoo `product.product.id` |
+| `product_name` | varchar | cached product name |
+| `ordered_qty` | decimal | quantity from PO line (read-only reference) |
+| `delivery_qty` | decimal | vendor-entered delivery quantity (must be <= ordered_qty) |
+| `received_qty` | decimal | NULL until store confirms receipt; final qty_done from Odoo |
+
+**`do_locks`**
+| Column | Type | Notes |
+|---|---|---|
+| `id` | serial PK | |
+| `do_id` | FK → delivery_orders, unique | which DO is locked |
 | `locked_by` | FK → vendor_users | vendor who signed |
 | `locked_at` | timestamp | when signature was submitted |
 | `signature_path` | varchar | server-side path to stored PNG |
-| `pdf_path` | varchar | server-side path to stored signed PDF |
+| `pdf_path` | varchar | server-side path to stored signed DO PDF |
 | `vendor_comment` | text | optional free-text note submitted by vendor at signing |
 | `unlocked_at` | timestamp | NULL unless admin unlocked via portal |
 | `unlocked_by` | FK → admin_users | admin who unlocked, NULL if not unlocked |
@@ -421,7 +514,7 @@ vendor-portal/
 | `id` | serial PK | |
 | `actor_type` | varchar | `vendor` or `admin` |
 | `actor_id` | integer | `vendor_users.id` or `admin_users.id` |
-| `action` | varchar | one of: `login`, `qty_update`, `sign`, `unlock` |
+| `action` | varchar | one of: `login`, `po_confirm`, `po_reject`, `do_update`, `do_sign`, `do_unlock`, `receipt_validated` |
 | `target_model` | varchar | e.g. `receipt`, `vendor` |
 | `target_id` | integer | e.g. `picking_id`, `partner_id` |
 | `detail` | jsonb | action-specific metadata (e.g. which lines were updated, old/new qty) |
@@ -454,8 +547,9 @@ The JWT access token carries a `role` field (`vendor` or `admin`). All admin-onl
 
 ### Objectives
 - Implement all data endpoints with vendor-scoped Odoo queries
-- Enforce receipt locking logic server-side
+- Enforce DO locking logic server-side
 - Implement the PDF generation and signing pipeline
+- Implement webhook receiver for Odoo receipt validation
 - Implement all email notification triggers via AWS SES
 
 ### Full endpoint list
@@ -463,25 +557,27 @@ The JWT access token carries a `role` field (`vendor` or `admin`). All admin-onl
 |---|---|---|
 | GET | `/api/vendors/me` | Current vendor profile |
 | PATCH | `/api/vendors/me/language` | Update preferred language (`vi` or `en`) |
-| GET | `/api/purchase-orders` | Paginated PO list, filterable by PO number and date range |
-| GET | `/api/purchase-orders/{id}` | PO detail with order lines |
+| GET | `/api/purchase-orders` | Paginated PO list with portal statuses, filterable by PO number and date range |
+| GET | `/api/purchase-orders/{id}` | PO detail with order lines + linked DO + receipt comparison |
 | POST | `/api/purchase-orders/{id}/confirm` | Confirm a Sent RFQ — calls `button_confirm` on Odoo; returns 409 if PO is not in `sent` state |
-| GET | `/api/receipts/{picking_id}` | Receipt detail with move lines and current `qty_done` |
-| PATCH | `/api/receipts/{picking_id}/lines` | Update `qty_done` on one or more move lines (blocked if locked) |
-| POST | `/api/receipts/{picking_id}/sign` | Submit signature PNG + optional comment, lock receipt, trigger emails, generate PDF |
-| GET | `/api/receipts/{picking_id}/pdf` | Download signed delivery PDF (available post-signature) |
+| POST | `/api/purchase-orders/{id}/reject` | Reject a Sent RFQ — calls `button_cancel` on Odoo + email to store; returns 409 if PO is not in `sent` state |
+| GET | `/api/delivery-orders/{do_id}` | DO detail with product lines, delivery date, and current quantities |
+| PATCH | `/api/delivery-orders/{do_id}/lines` | Update quantities + delivery date on the DO (blocked if signed/locked); qty must be <= ordered qty |
+| POST | `/api/delivery-orders/{do_id}/sign` | Submit signature PNG + optional comment, lock DO, push to Odoo Receipt, generate PDF |
+| GET | `/api/delivery-orders/{do_id}/pdf` | Download signed DO PDF (available post-signature, can be called multiple times for printing) |
+| POST | `/api/webhooks/odoo/receipt-validated` | Webhook receiver: Odoo notifies portal when Receipt is validated — triggers status update + vendor email |
 
 ### Admin-only endpoints
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/api/admin/vendors` | List all vendor accounts with status, last login, signed receipt count, pending receipt count |
-| GET | `/api/admin/vendors/{partner_id}` | Drill into a specific vendor — their POs and receipts (read-only) |
+| GET | `/api/admin/vendors` | List all vendor accounts with status, last login, signed DO count, pending DO count |
+| GET | `/api/admin/vendors/{partner_id}` | Drill into a specific vendor — their POs and DOs (read-only) |
 | PATCH | `/api/admin/vendors/{partner_id}/deactivate` | Deactivate a vendor account |
 | PATCH | `/api/admin/vendors/{partner_id}/reactivate` | Reactivate a vendor account |
 | POST | `/api/admin/sync` | Manually trigger the Odoo partner sync job |
 | GET | `/api/admin/sync/status` | Return last sync time, number of vendors synced, list of skipped vendors (no email) |
-| GET | `/api/admin/receipts/{picking_id}/pdf` | Download any vendor's signed PDF |
-| POST | `/api/admin/receipts/{picking_id}/unlock` | Remove the receipt lock — vendor can update and re-sign |
+| GET | `/api/admin/delivery-orders/{do_id}/pdf` | Download any vendor's signed DO PDF |
+| POST | `/api/admin/delivery-orders/{do_id}/unlock` | Remove the DO lock — sends email to vendor, vendor can update and re-sign |
 | GET | `/api/admin/audit-log` | Paginated audit log view, filterable by actor, action type, and date range |
 
 All admin endpoints require `role == 'admin'` in the JWT. They are prefixed with `/api/admin/` to make the distinction explicit and apply a separate rate limiting policy.
@@ -495,29 +591,42 @@ The `GET /api/purchase-orders` endpoint accepts the following optional query par
 
 Filtering is applied server-side in the Odoo domain filter, not in the frontend.
 
-### Receipt locking and unlocking approach
-- When `POST /api/receipts/{picking_id}/sign` is called, the backend inserts a row into `receipt_locks` and marks the receipt as locked
-- Any subsequent `PATCH /lines` call on a locked receipt returns HTTP 423 (Locked)
-- The receipt detail endpoint returns a `locked: true` flag — the frontend disables all editing accordingly
-- **Unlocking:** a portal admin calls `POST /api/admin/receipts/{picking_id}/unlock`, which deletes the `receipt_locks` row and records who unlocked it and when. The vendor can then update quantities and re-sign. The Odoo picking state is not affected — it remains `assigned` throughout.
+### DO locking and unlocking approach
+- When `POST /api/delivery-orders/{do_id}/sign` is called, the backend inserts a row into `do_locks` and marks the DO as locked
+- Any subsequent `PATCH /lines` call on a locked DO returns HTTP 423 (Locked)
+- The DO detail endpoint returns a `locked: true` flag — the frontend disables all editing accordingly
+- On signing, the backend pushes delivery date + set quantities to the Odoo Receipt via XML-RPC
+- **Unlocking:** a portal admin calls `POST /api/admin/delivery-orders/{do_id}/unlock`, which removes the lock record, sends an email to the vendor, and logs the action. The vendor can then update quantities and re-sign.
 
 ### Validation approach (no portal-side `button_validate`)
-Since the admin decides on backorders in Odoo, the portal does **not** call `button_validate`. The vendor's role is:
-1. Enter `qty_done` values (multiple saves allowed)
-2. Sign the receipt (locks the portal record)
+Since the store decides on backorders in Odoo, the portal does **not** call `button_validate`. The vendor's role is:
+1. Edit the DO: delivery date + quantities (qty <= ordered qty, multiple saves allowed)
+2. Sign the DO (locks the portal record, pushes set quantities to Odoo Receipt)
 
-The Odoo picking remains in `assigned` state after the vendor signs — the internal team sees the vendor's `qty_done` values and validates in Odoo at their discretion.
+The Odoo picking remains in `assigned` state after the vendor signs — the store sees the set quantities and validates in Odoo at their discretion. Only when the store confirms the Receipt does `qty_done` get finalized.
+
+### Webhook: Receipt validated
+When the store confirms a Receipt in Odoo, a webhook notifies the portal:
+1. Portal receives `POST /api/webhooks/odoo/receipt-validated` with `picking_id`
+2. Portal reads the confirmed `qty_done` values from Odoo via XML-RPC
+3. Portal compares vendor's DO quantities against store's `qty_done`:
+   - All lines match → PO portal status = **Verified**
+   - Any line differs → PO portal status = **Discrepancy**
+4. Portal sends email to vendor with delivered vs received comparison + PDF attachment
+5. Nightly sync at 23:00 catches any missed webhooks as a fallback
 
 ### Audit logging approach
-Every key action is written to the `audit_log` table synchronously within the same request. The four logged action types are:
+Every key action is written to the `audit_log` table synchronously within the same request. The logged action types are:
 
 | Action | Trigger | Detail stored |
 |---|---|---|
 | `login` | Successful vendor or admin login | actor type, actor ID, IP address, timestamp |
 | `po_confirm` | `POST /purchase-orders/:id/confirm` | PO ID, PO name, previous state (`sent`), new state (`purchase`) |
-| `qty_update` | `PATCH /receipts/:id/lines` | picking ID, list of move line IDs with old and new `qty_done` values |
-| `sign` | `POST /receipts/:id/sign` | picking ID, vendor comment (if any), PDF path, signature path |
-| `unlock` | `POST /admin/receipts/:id/unlock` | picking ID, admin who unlocked, reason if provided |
+| `po_reject` | `POST /purchase-orders/:id/reject` | PO ID, PO name, previous state (`sent`), new state (`cancel`) |
+| `do_update` | `PATCH /delivery-orders/:id/lines` | DO ID, list of lines with old and new quantities |
+| `do_sign` | `POST /delivery-orders/:id/sign` | DO ID, vendor comment (if any), PDF path, signature path |
+| `do_unlock` | `POST /admin/delivery-orders/:id/unlock` | DO ID, admin who unlocked, reason if provided |
+| `receipt_validated` | Webhook from Odoo | picking ID, final status (Verified/Discrepancy) |
 
 The audit log is viewable by admins via `GET /api/admin/audit-log`, filterable by actor, action type, and date range, paginated at 50 rows per page. It is never editable or deletable through the portal.
 
@@ -527,18 +636,18 @@ The audit log is viewable by admins via `GET /api/admin/audit-log`, filterable b
 |---|---|---|
 | New vendor synced | Vendor | Welcome email with Vendor ID + set-password link |
 | Forgot password requested | Vendor | Reset link (24h expiry) |
-| Receipt signed by vendor | Vendor | Confirmation with PO number, receipt reference, PDF attachment |
-| Receipt signed by vendor | Internal team (`INTERNAL_NOTIFICATION_EMAIL`) | Alert with vendor name, PO number, receipt reference, link to Odoo |
+| Vendor confirms PO | Store (`INTERNAL_NOTIFICATION_EMAIL`) | PO confirmed — vendor name, PO number |
+| Vendor rejects RFQ | Store (`INTERNAL_NOTIFICATION_EMAIL`) | RFQ rejected by vendor — vendor name, PO number, cancelled in Odoo |
+| Store confirms receipt | Vendor | Comparison: vendor DO qty vs store received qty + PDF attachment |
+| DO unlocked by admin | Vendor | Notification that DO has been unlocked for re-editing |
 
-All emails are sent in the vendor's `preferred_language` for vendor-facing emails, and in English for internal team emails.
+All emails are sent in the vendor's `preferred_language` for vendor-facing emails, and in Vietnamese for store emails.
 
-### PDF pipeline approach
-1. Check `receipt_locks` — PDF only generated after signature is submitted
-2. Fetch the Odoo delivery slip via authenticated HTTP session (`/report/pdf/stock.report_deliveryslip/{picking_id}`)
-3. Generate a confirmation page as HTML rendered to PDF with WeasyPrint, embedding: vendor's signature PNG, vendor name, Vendor ID, PO reference, timestamp, and vendor comment (if provided)
-4. Merge both PDFs with pypdf (delivery slip first, confirmation page appended)
-5. Store the merged PDF permanently on the server filesystem (no expiry)
-6. Return the PDF as a binary response with `Content-Disposition: attachment`
+### DO PDF pipeline approach
+1. Check `do_locks` — PDF only generated after signature is submitted
+2. Generate the DO document as HTML rendered to PDF with WeasyPrint, including: vendor company name, store name, product list with ordered qty and delivery qty, delivery date, vendor's digital signature PNG, timestamp, and vendor comment (if provided), plus a blank space for store's physical signature
+3. Store the PDF on the server filesystem (retained for 24 months, matching PO retention)
+4. Return the PDF as a binary response with `Content-Disposition: attachment` — vendor can call this endpoint multiple times to print
 
 ---
 
@@ -550,7 +659,7 @@ All emails are sent in the vendor's `preferred_language` for vendor-facing email
 - Implement bilingual support (Vietnamese + English, user-switchable)
 - Implement the `fetch`-based API client with automatic JWT refresh
 - Integrate `signature_pad.js` for signature capture
-- Implement the qty_done update form with save and lock state handling
+- Implement the DO edit form with quantity validation (qty <= ordered) and lock state handling
 
 ### Internationalisation (i18n) approach
 - Use `react-i18next` with two locale files: `vi.json` and `en.json`
@@ -568,24 +677,24 @@ All emails are sent in the vendor's `preferred_language` for vendor-facing email
 | `/admin/login` | Admin Login | Admin | Username + password (separate login page) |
 | `/set-password` | Set Password | Vendor | First-time invite and forgot-password reset |
 | `/forgot-password` | Forgot Password | Vendor | Enter Vendor ID to receive reset email |
-| `/dashboard` | Dashboard | Vendor | PO list with search/filter bar and status badges |
-| `/purchase-orders/:id` | PO Detail | Vendor | Order lines + linked receipts (Ready / Done) |
-| `/receipts/:id` | Receipt Detail | Vendor | Move lines with editable qty_done fields (locked if signed) |
-| `/receipts/:id/sign` | Sign & Confirm | Vendor | Signature pad + final confirmation step |
-| `/receipts/:id/pdf` | PDF Download | Vendor | Download link for signed delivery PDF |
-| `/pdfs` | PDF History | Vendor | List of all previously signed PDFs with download links |
+| `/dashboard` | Dashboard | Vendor | PO list with search/filter bar and portal status badges (Waiting/Confirmed/Cancelled/Verified/Discrepancy) |
+| `/purchase-orders/:id` | PO Detail | Vendor | Order lines + linked DO + receipt comparison (vendor qty vs store qty) |
+| `/delivery-orders/:id` | DO Detail | Vendor | Product lines with editable delivery qty + date (locked if signed) |
+| `/delivery-orders/:id/sign` | Sign DO | Vendor | Signature pad + final confirmation step |
+| `/delivery-orders/:id/pdf` | DO PDF | Vendor | Download/print signed DO PDF (can print multiple times) |
+| `/pdfs` | PDF History | Vendor | List of all previously signed DO PDFs with download links |
 | `/profile` | Profile | Vendor | Read-only vendor profile + language preference |
-| `/admin/dashboard` | Admin Dashboard | Admin | Summary stats: vendor counts, pending receipts, sync status |
-| `/admin/vendors` | Vendor List | Admin | All vendor accounts with status, last login, receipt counts |
-| `/admin/vendors/:id` | Vendor Detail | Admin | Specific vendor's POs and receipts (read-only drill-down) |
+| `/admin/dashboard` | Admin Dashboard | Admin | Summary stats: vendor counts, pending DOs, sync status |
+| `/admin/vendors` | Vendor List | Admin | All vendor accounts with status, last login, DO counts |
+| `/admin/vendors/:id` | Vendor Detail | Admin | Specific vendor's POs and DOs (read-only drill-down) |
 | `/admin/sync` | Sync Status | Admin | Last sync time, skipped vendors, manual trigger button |
 
 ### Admin dashboard content
 The admin dashboard shows the following at a glance:
 - **Vendor summary:** total vendors, active count, inactive count
-- **Vendor table:** sortable list showing vendor name, Vendor ID, account status (active/inactive), last login date, number of signed receipts, number of pending receipts (Ready but not yet signed)
+- **Vendor table:** sortable list showing vendor name, Vendor ID, account status (active/inactive), last login date, number of signed DOs, number of pending DOs (Draft, not yet signed)
 - **Sync status panel:** last sync timestamp, number of vendors synced, number of vendors skipped (no email), manual "Run Sync Now" button
-- Clicking any vendor row navigates to `/admin/vendors/:id` — a read-only view of that vendor's POs and receipts, with a download button for any signed PDF and an unlock button on locked receipts
+- Clicking any vendor row navigates to `/admin/vendors/:id` — a read-only view of that vendor's POs and DOs, with a download button for any signed DO PDF and an unlock button on locked DOs
 
 ### Admin navigation
 Admin users see the same top navigation bar as vendors, with additional items: **Vendors**, **Sync Status**, **Audit Log**. The language toggle is present — admin section supports both Vietnamese and English. Admin routes are protected — a vendor JWT cannot access `/admin/*` routes.
@@ -598,7 +707,7 @@ Admin users see the same top navigation bar as vendors, with additional items: *
 - No direct `fetch` calls in components — all calls go through this wrapper
 
 ### State management approach
-- **TanStack Query** for all server state — PO list, receipt detail, profile
+- **TanStack Query** for all server state — PO list, DO detail, profile
 - **React local state** (`useState`) for form inputs, signature state, UI toggles
 - No global state manager needed at this scope
 
@@ -609,52 +718,65 @@ Admin users see the same top navigation bar as vendors, with additional items: *
 - Tables on mobile collapse to card-style layouts for readability
 
 ### Vendor dashboard summary
-Above the PO list, the vendor dashboard shows three summary cards:
-- **Total POs** — count of all visible POs (Confirmed + Done)
-- **Pending receipts** — receipts in Ready state not yet signed
-- **Signed receipts** — receipts the vendor has already confirmed
+Above the PO list, the vendor dashboard shows summary cards:
+- **Waiting** — POs awaiting vendor confirmation
+- **Confirmed** — POs with DOs pending signature
+- **Verified** — POs where store receipt matched DO
+- **Discrepancy** — POs where store receipt differed from DO
 
 ### PO list search & filter UI
 - Search bar for PO number (partial match, debounced 300ms before API call)
 - Date range pickers for `date_from` and `date_to`
-- Status badge on each PO row (Confirmed / Done) with colour coding
+- Status badge on each PO row (Waiting / Confirmed / Cancelled / Verified / Discrepancy) with colour coding
 - Pagination controls (previous / next), page size fixed at 20
 
-### Receipt detail — visible fields per move line
+### DO detail — visible fields per product line
 | Field | Source |
 |---|---|
-| Product code / SKU | `stock.move.line` → `product_id.default_code` |
-| Product description | `stock.move.line` → `product_id.name` |
-| Unit of measure | `stock.move.line` → `product_uom_id.name` |
-| Ordered quantity | `purchase.order.line` → `product_qty` |
-| Delivered quantity (editable) | `stock.move.line` → `qty_done` |
-| Unit price | `purchase.order.line` → `price_unit` |
-| Subtotal | Calculated: unit price × delivered qty (frontend only, not stored) |
+| Product code / SKU | `delivery_order_lines` → `product_id` (from Odoo) |
+| Product description | `delivery_order_lines` → `product_name` |
+| Unit of measure | from Odoo `purchase.order.line` → `product_uom.name` |
+| Ordered quantity (read-only) | `delivery_order_lines` → `ordered_qty` (from PO line) |
+| Delivery quantity (editable) | `delivery_order_lines` → `delivery_qty` (must be <= ordered_qty) |
+| Received quantity (read-only) | `delivery_order_lines` → `received_qty` (NULL until store confirms; shows store's final qty_done) |
+| Unit price | from Odoo `purchase.order.line` → `price_unit` |
+| Subtotal | Calculated: unit price x delivery qty (frontend only, not stored) |
 
-### Receipt detail behaviour
-- Each move line shows all fields above; delivered qty is the only editable field
-- "Save" button submits `PATCH /lines` — can be pressed multiple times before signing
+### DO detail behaviour
+- Delivery date picker at the top of the DO form
+- Each product line shows all fields above; delivery qty is the only editable field (plus delivery date)
+- Validation: delivery qty must be <= ordered qty — frontend and backend both enforce this
+- "Save" button submits `PATCH /delivery-orders/:id/lines` — can be pressed multiple times before signing
 - If `locked: true` is returned by the API, all inputs are disabled and a lock notice is shown
-- A "Sign & Confirm" button at the bottom is enabled only when all `qty_done` values are > 0
-- Once signed, the page shows a read-only summary and a PDF download button
+- A "Sign DO" button at the bottom is enabled only when delivery date is set and all delivery qty values are > 0
+- Once signed, the page shows a read-only summary with a "Print DO" button
+- After store confirms receipt, the `received_qty` column is populated — vendor sees both their delivery qty and the store's received qty side by side
+
+### PO detail — receipt comparison view
+After the store confirms the receipt, the PO detail page shows:
+- **Vendor DO quantities** — what the vendor planned to deliver
+- **Store received quantities** — what the store actually confirmed in Odoo
+- **Status** — Verified (all match) or Discrepancy (any differ)
+- Per-line comparison highlighting any differences
 
 ### PDF history page
-- Lists all receipts the vendor has signed, in reverse chronological order
-- Each row shows: PO number, receipt reference, date signed, vendor comment (if any), download button
-- Download calls `GET /api/receipts/{picking_id}/pdf` — PDFs are stored permanently and always available
+- Lists all DOs the vendor has signed, in reverse chronological order
+- Each row shows: PO number, DO reference, delivery date, date signed, vendor comment (if any), download button
+- Download calls `GET /api/delivery-orders/{do_id}/pdf` — PDFs are retained for 24 months (matching PO retention)
 
 ### Signature and comment capture
 - `signature_pad.js` renders on an HTML5 canvas (resizes for mobile)
-- Optional free-text comment field above the signature pad — vendor can describe delivery conditions, discrepancies, or notes
+- Optional free-text comment field above the signature pad — vendor can describe delivery conditions or notes
 - "Clear" button resets the canvas only
-- "Confirm & Submit" sends both the signature PNG (base64) and the comment text to `POST /api/receipts/:id/sign`
+- "Confirm & Submit" sends both the signature PNG (base64) and the comment text to `POST /api/delivery-orders/:id/sign`
 - Pad and comment field are disabled after successful submission
 - A loading state is shown while the PDF is being generated server-side
 
 ### Key UX considerations
-- Login field label: **"Mã nhà cung cấp / Vendor ID"** with helper text explaining it was provided in the welcome email
-- Receipt lines show ordered qty and delivered qty side by side for easy comparison
-- Lock notice on signed receipts: "Phiếu nhập đã được xác nhận / Receipt has been confirmed"
+- Login field label: **"Ma nha cung cap / Vendor ID"** with helper text explaining it was provided in the welcome email
+- DO lines show ordered qty, delivery qty, and received qty (when available) side by side for easy comparison
+- Waiting POs show "Confirm PO" and "Reject" buttons prominently
+- Lock notice on signed DOs: "Phiếu giao hàng đã được ký / Delivery Order has been signed"
 - Comment field placeholder: "Ghi chú giao hàng / Delivery notes (optional)"
 - All form submissions disable the button while in flight to prevent double submission
 
@@ -706,7 +828,8 @@ All containers: `restart: unless-stopped`. Health check on backend container (`G
 - Daily `pg_dump` via cron on the portal VM
 - Compressed with gzip, stored in `/backups/`, 30-day retention
 - Optionally synced to Azure Blob Storage
-- PDF files stored permanently on server filesystem — include in VM backup strategy
+- PDF files stored on server filesystem (24-month retention) — include in VM backup strategy
+- Scheduled cleanup job removes POs and associated DOs, PDFs older than 24 months
 
 ### Go-live checklist
 - [ ] Odoo service account API key generated and connectivity tested from portal VM
@@ -717,10 +840,12 @@ All containers: `restart: unless-stopped`. Health check on backend container (`G
 - [ ] All production secrets set in Docker secrets files
 - [ ] Upstream load balancer / proxy configured to forward HTTPS traffic
 - [ ] Partner sync job run manually once — initial vendor accounts created
-- [ ] At least one test vendor: invite received → password set → login → dashboard summary visible → PO found via search → qty updated with comment → signed → PDF downloaded → PDF history shows entry
-- [ ] Notification emails received by vendor and internal team
-- [ ] Locked receipt confirmed uneditable by vendor
-- [ ] Admin can view vendor, download PDF, unlock receipt
+- [ ] Odoo webhook module installed: `base_automation` server action triggers on `stock.picking` state → `done`
+- [ ] At least one test vendor: invite received → password set → login → dashboard visible → PO confirmed → DO edited + signed → DO PDF printed → delivered to store → store confirms receipt in Odoo → portal shows Verified/Discrepancy → vendor email received with comparison
+- [ ] Test RFQ rejection: vendor rejects → Odoo cancels → store email received
+- [ ] Notification emails received by vendor and store
+- [ ] Locked DO confirmed uneditable by vendor
+- [ ] Admin can view vendor, download DO PDF, unlock DO (vendor email received)
 - [ ] Audit log shows all actions from the test run
 - [ ] Vietnamese and English UI both verified on desktop and mobile
 

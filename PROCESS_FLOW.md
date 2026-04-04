@@ -12,40 +12,41 @@ flowchart LR
     classDef internal fill:#FEF3C7,stroke:#F59E0B,color:#451A03,font-weight:bold
     classDef decision fill:#FFF,stroke:#6B7280,color:#111827
 
-    S1([🏪 Cửa hàng\ntạo RFQ\ntrên Odoo]):::store
-    S2([📧 Gửi RFQ\ncho nhà cung cấp]):::store
+    S1([Store creates\nRFQ in Odoo]):::store
+    S2([RFQ sent\nto vendor]):::store
 
-    V1([✅ Nhà cung cấp\nxác nhận PO\ntrên Portal]):::vendor
-    V2([📦 Điền số lượng\nvà ngày giao\ntrên Portal]):::vendor
-    V3([🚚 Giao hàng\nthực tế\ncho kho]):::vendor
-    V4([✍️ Ký xác nhận\ntrên Portal\nvà tải PDF]):::vendor
+    D1{Vendor confirms\nor rejects?}:::decision
+    D1_NO([Vendor rejects RFQ\non Portal]):::vendor
+    D1_CANCEL([Portal cancels RFQ\nin Odoo + email to store]):::portal
 
-    P1{{Portal tự động\nkhoá DO\nlúc 23:00}}:::portal
-    P2{{Portal tạo\nPDF có chữ ký\nvà gửi email}}:::portal
+    V1([Vendor confirms PO\non Portal]):::vendor
+    V2([DO auto-created\nVendor edits qty + date]):::vendor
+    V3([Vendor signs DO\ndigitally on Portal]):::vendor
+    V4([Print DO PDF\nwith signature]):::vendor
+    V5([Deliver goods\nto store with paper DO]):::vendor
 
-    I1([🔍 Nội bộ\nkiểm tra\nsố lượng]):::internal
-    I2([✔️ Xác nhận\nnhập kho\ntrên Odoo]):::internal
+    P1{{Portal pushes\nqty + date to Odoo\nReceipt}}:::portal
 
-    S1 --> S2 --> V1
-    V1 --> V2
-    V2 --> P1
-    P1 --> V3
-    V3 --> V4
-    V4 --> P2
-    P2 --> I1
-    I1 --> I2
-    I2 --> DONE([🎉 Hoàn tất]):::store
+    I1([Store receives goods\nconfirms Receipt in Odoo]):::internal
+    I2{{Portal receives\nwebhook from Odoo}}:::portal
+    I3([Vendor sees final\nqty on Portal\nVerified or Discrepancy]):::vendor
+
+    S1 --> S2 --> D1
+    D1 -- Reject --> D1_NO --> D1_CANCEL
+    D1 -- Confirm --> V1 --> V2 --> V3 --> V4 --> V5
+    V3 --> P1
+    V5 --> I1 --> I2 --> I3
 ```
 
-> **Màu sắc:** 🔵 Cửa hàng &nbsp;|&nbsp; 🟢 Nhà cung cấp &nbsp;|&nbsp; 🟣 Hệ thống Portal &nbsp;|&nbsp; 🟡 Nội bộ 3Sach
+> **Colours:** Blue = Store | Green = Vendor | Purple = Portal System | Yellow = Internal 3Sach
 
 ---
 
-## Full Purchase Workflow: RFQ → PO Confirm → Delivery → Receipt
+## Full Purchase Workflow: RFQ -> PO Confirm -> DO -> Delivery -> Receipt
 
 ```mermaid
 flowchart TD
-    subgraph ONBOARD["🟦 Vendor Onboarding"]
+    subgraph ONBOARD["Vendor Onboarding"]
         A1([New vendor added in Odoo\nsupplier_rank > 0]) --> A2[Sync job runs every 6h]
         A2 --> A3{Has email?}
         A3 -- No --> A4[Skip & log for manual follow-up]
@@ -54,63 +55,55 @@ flowchart TD
         A6 --> A7[Vendor sets password\nAccount becomes active]
     end
 
-    subgraph RFQ_PO["🟨 RFQ → PO Confirmation  ·  Cửa hàng / Vendor Portal"]
-        B1([Cửa hàng tạo RFQ trên Odoo]) --> B2[Sent RFQ\nEmail gửi cho NCC]
-        B2 --> B3{Vendor xác nhận PO\ntrước Order Deadline?}
-        B3 -- No --> B3X([PO không được xác nhận\nRFQ hết hạn])
-        B3 -- Yes --> B4[Vendor clicks 'Confirm PO'\non Vendor Portal]
+    subgraph RFQ_PO["RFQ -> PO Confirmation / Rejection"]
+        B1([Store creates RFQ in Odoo]) --> B2[Sent RFQ\nEmail sent to vendor]
+        B2 --> B3{Vendor action\non Portal?}
+        B3 -- Confirm --> B4[Vendor clicks Confirm PO\non Vendor Portal]
         B4 --> B5[Portal calls button_confirm\non purchase.order via XML-RPC]
-        B5 --> B6[PO Confirmed\nOdoo cập nhật trạng thái: sent → purchase]
+        B5 --> B6[PO Confirmed in Odoo\nstate: sent -> purchase]
+        B3 -- Reject --> B7[Vendor clicks Reject\non Vendor Portal]
+        B7 --> B8[Portal calls button_cancel\non purchase.order via XML-RPC]
+        B8 --> B9[RFQ Cancelled in Odoo\nstate: sent -> cancel]
+        B9 --> B10[Email notification sent to store\nRFQ rejected by vendor]
+        B3 -- No action --> B3X([RFQ expires\nif Order Deadline passes])
     end
 
-    subgraph DO["🟧 Delivery Order  ·  Vendor Portal"]
-        C1[DO sinh ra tự động\nIn và sửa được] --> C2[NCC chỉnh DO trên portal\nNgày giao + số lượng\nSL giao ≤ SL đặt]
-        C2 --> C3{Trước 23:00\nđêm trước ngày giao?}
-        C3 -- Yes --> C4[DO vẫn có thể chỉnh sửa]
-        C4 --> C3
-        C3 -- No / 23:00 CUTOFF --> C5[Hệ thống xác nhận SL giao\nKhóa chỉnh sửa trên Vendor Portal]
-        C5 --> C6[DO bị khóa\nKhông sửa được]
-        C5 --> C7[Push vào Odoo\nCập nhật Receipt: ngày + SL dự kiến]
+    subgraph DO["Delivery Order — Vendor Portal"]
+        C1[1 DO auto-created per confirmed PO\nEditable by vendor] --> C2[Vendor edits DO on portal\nDelivery date + quantities\nQty <= ordered qty]
+        C2 --> C3[Vendor clicks Sign DO\nDraws digital signature]
+        C3 --> C4[DO locked — no further edits]
+        C4 --> C5[Portal pushes to Odoo\nDelivery date + set quantities\ninto Receipt]
+        C4 --> C6[Vendor can print DO PDF\nIncludes digital signature\nCan print multiple times]
     end
 
-    subgraph DELIVERY["🟩 Physical Delivery  ·  Kho nhận"]
-        D1[Kho nhận DO\nXác nhận SL] --> D2[NCC giao hàng\nKèm 2 tờ DO]
-        D2 --> D3[Ký xác nhận 2 tờ DO\nmỗi bên giữ 1 tờ]
+    subgraph DELIVERY["Physical Delivery — Store"]
+        D1[Vendor brings printed DO\nto store with goods] --> D2[Store receives goods\nChecks quantities]
+        D2 --> D3[Both parties sign\n2 paper copies of DO\nEach keeps 1 copy]
     end
 
-    subgraph PORTAL_CONFIRM["🟪 Receipt Confirmation  ·  Vendor Portal"]
-        E1[Vendor mở Receipt\ntrạng thái: Ready / assigned] --> E2[Vendor nhập qty_done\nthực tế từng sản phẩm\ncó thể lưu nhiều lần]
-        E2 --> E3[Vendor clicks 'Sign & Confirm']
-        E3 --> E4[Vendor ký tên trên màn hình\nsignature_pad.js → PNG]
-        E4 --> E5[Portal tạo signed PDF\nOdoo delivery slip + trang xác nhận\nWeasyPrint + pypdf]
-        E5 --> E6[Receipt bị khóa trên portal\nKhông chỉnh sửa được]
-        E6 --> E7A[Email xác nhận → Vendor\nkèm PDF đính kèm]
-        E6 --> E7B[Email cảnh báo → Internal team\nVendor name, PO ref, link Odoo]
+    subgraph STORE_CONFIRM["Receipt Confirmation — Odoo"]
+        E1[Store reviews Receipt in Odoo\nCan adjust set quantities] --> E2[Store confirms Receipt\nqty_done is finalized]
+        E2 --> E3{Quantities match\nvendor DO?}
+        E3 -- Yes --> E4[PO status on Portal:\nVerified]
+        E3 -- No --> E5[PO status on Portal:\nDiscrepancy]
+        E4 --> E6[Webhook notifies Portal]
+        E5 --> E6
+        E6 --> E7[Email to vendor:\nComparison delivered vs received\n+ PDF attachment]
     end
 
-    subgraph ODOO_VALIDATE["🟥 Odoo Validation  ·  Internal Team"]
-        F1[Internal team review\nsố lượng trong Odoo] --> F2{Số lượng OK?}
-        F2 -- Yes --> F3[Admin validates Receipt trong Odoo]
-        F2 -- No / Short --> F4[Admin điều chỉnh + quyết định backorder]
-        F4 --> F3
-        F3 --> F5([Receipt Done\nHoàn tất nhập kho ✓])
-    end
-
-    subgraph UNLOCK["🔓 Exception: Unlock Receipt"]
-        G1([Vendor nhập sai số lượng]) --> G2[Portal Admin mở khóa\ntại /admin/vendors/:id]
-        G2 --> G3[Unlock ghi vào receipt_locks\nunlocked_at + unlocked_by]
-        G3 --> G4[Vendor cập nhật qty_done\nvà ký lại]
-        G4 --> E3
+    subgraph UNLOCK["Exception: Unlock DO"]
+        G1([Vendor entered wrong quantities]) --> G2[Portal Admin unlocks DO]
+        G2 --> G3[Email notification sent to vendor]
+        G3 --> G4[Vendor updates DO\nand re-signs]
+        G4 --> C3
     end
 
     %% Connect major phases
     A7 --> B2
     B6 --> C1
     C6 --> D1
-    C7 --> E1
     D3 --> E1
-    E6 --> F1
-    E6 -.->|"Signed / Locked state"| UNLOCK
+    C4 -.->|"Signed / Locked state"| UNLOCK
 ```
 
 ---
@@ -122,76 +115,102 @@ sequenceDiagram
     actor Vendor
     participant Portal as Vendor Portal
     participant Odoo as Odoo (XML-RPC)
-    participant Kho as Kho nhận
-    participant Team as Internal Team
+    participant Store as Store (Odoo only)
 
-    Note over Vendor,Team: ── Phase 1: RFQ & PO Confirmation ──
-    Odoo->>Vendor: Sent RFQ email (NCC)
-    Vendor->>Portal: Confirm PO (trước Order Deadline)
-    Portal->>Odoo: button_confirm on purchase.order
-    Odoo-->>Portal: PO state: sent → purchase
-    Odoo-->>Portal: DO / Receipt created (assigned)
+    Note over Vendor,Store: ── Phase 1: RFQ & PO Confirmation ──
+    Odoo->>Vendor: Sent RFQ email
+    alt Vendor confirms
+        Vendor->>Portal: Click "Confirm PO"
+        Portal->>Odoo: button_confirm on purchase.order
+        Odoo-->>Portal: PO state: sent -> purchase
+        Odoo-->>Portal: DO + Receipt auto-created
+    else Vendor rejects
+        Vendor->>Portal: Click "Reject"
+        Portal->>Odoo: button_cancel on purchase.order
+        Odoo-->>Portal: PO state: sent -> cancel
+        Portal->>Store: Email: RFQ rejected by vendor
+    end
 
-    Note over Vendor,Team: ── Phase 2: Delivery Order Edit ──
+    Note over Vendor,Store: ── Phase 2: Delivery Order (Portal) ──
     Portal->>Vendor: DO available — editable
-    Vendor->>Portal: Chỉnh DO: ngày giao + SL giao (≤ SL đặt)
-    Note over Portal: 23:00 CUTOFF — đêm trước ngày giao
-    Portal->>Portal: Lock DO, confirm SL giao
-    Portal->>Odoo: Push Receipt: ngày + SL dự kiến
+    Vendor->>Portal: Edit DO: delivery date + quantities (qty <= ordered)
+    Vendor->>Portal: Sign DO digitally
+    Portal->>Portal: Lock DO — no further edits
+    Portal->>Odoo: Push delivery date + set quantities into Receipt
+    Portal->>Vendor: DO PDF available for printing (includes signature)
 
-    Note over Vendor,Team: ── Phase 3: Physical Delivery ──
-    Portal->>Kho: Gửi DO (2 bản)
-    Vendor->>Kho: Giao hàng kèm 2 tờ DO
-    Kho->>Vendor: Ký xác nhận — mỗi bên 1 tờ
+    Note over Vendor,Store: ── Phase 3: Physical Delivery ──
+    Vendor->>Store: Deliver goods with printed DO (2 copies)
+    Store->>Vendor: Both sign paper copies — each keeps 1
 
-    Note over Vendor,Team: ── Phase 4: Portal Receipt Confirmation ──
-    Vendor->>Portal: Mở Receipt (Ready), nhập qty_done
-    Vendor->>Portal: Sign & Confirm + vẽ chữ ký
-    Portal->>Portal: Tạo signed PDF (Odoo slip + chữ ký)
-    Portal->>Odoo: (Receipt vẫn assigned — chờ admin validate)
-    Portal->>Vendor: Email xác nhận + PDF đính kèm
-    Portal->>Team: Email cảnh báo: vendor, PO ref, link Odoo
+    Note over Vendor,Store: ── Phase 4: Store Receipt Confirmation (Odoo) ──
+    Store->>Odoo: Review Receipt, adjust quantities if needed
+    Store->>Odoo: Confirm Receipt (qty_done finalized)
+    Odoo->>Portal: Webhook: Receipt validated
+    Portal->>Portal: Compare vendor DO qty vs store qty_done
+    alt Quantities match
+        Portal->>Portal: PO status -> Verified
+    else Quantities differ
+        Portal->>Portal: PO status -> Discrepancy
+    end
+    Portal->>Vendor: Email: delivered vs received comparison + PDF
 
-    Note over Vendor,Team: ── Phase 5: Odoo Validation ──
-    Team->>Odoo: Review qty, validate Receipt
-    Odoo-->>Portal: Receipt state: done
-    Note over Odoo: Hoàn tất nhập kho ✓
+    Note over Vendor,Store: ── Exception: Unlock DO ──
+    Portal->>Vendor: Admin unlocks DO + email notification
+    Vendor->>Portal: Re-edit DO quantities and re-sign
 ```
 
 ---
 
-## Receipt State Machine
+## PO Status Mapping: Portal vs Odoo
+
+Portal and Odoo maintain **different status labels**. Odoo's base behaviour is never modified.
+
+| Portal Status | Odoo State | Trigger | Vendor can do |
+|---|---|---|---|
+| **Waiting** | `sent` | Store sends RFQ | Confirm or Reject |
+| **Confirmed** | `purchase` | Vendor confirms PO on portal | Edit & sign DO |
+| **Cancelled** | `cancel` | Vendor rejects, or store cancels | Read-only |
+| **Verified** | `purchase` (receipt `done`, qty match) | Store confirms receipt, quantities match | Read-only, export data |
+| **Discrepancy** | `purchase` (receipt `done`, qty mismatch) | Store confirms receipt, quantities differ | Read-only, export data |
+
+> **Note:** Verified and Discrepancy both correspond to `purchase` state in Odoo — the PO itself does not move to `done` in Odoo. The portal derives these statuses by comparing the vendor's DO quantities against the store's confirmed receipt quantities.
+
+---
+
+## DO State Machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Ready : PO confirmed,\nDO locked after cutoff
+    [*] --> Draft : PO confirmed,\nDO auto-created
 
-    Ready --> Signed : Vendor nhập qty_done\nvà ký tên
+    Draft --> Signed : Vendor edits qty + date,\nsigns digitally
 
-    Signed --> Ready : Portal Admin unlock\n(logged in receipt_locks)
+    Signed --> Draft : Portal Admin unlocks\n(vendor notified by email)
 
-    Signed --> Done : Internal team\nvalidates in Odoo
+    Signed --> [*] : Store confirms receipt\n(PO becomes Verified or Discrepancy)
 
-    Done --> [*]
-
-    note right of Ready
-        Odoo state: assigned
-        Vendor: có thể nhập qty_done
+    note right of Draft
+        Vendor: can edit delivery date + quantities
+        Quantities must be <= ordered qty
         Portal: editable
     end note
 
     note right of Signed
-        Odoo state: assigned (pending)
-        Vendor: read-only, có thể tải PDF
-        Portal: locked
-    end note
-
-    note right of Done
-        Odoo state: done
-        Vendor: read-only, có thể tải PDF
-        Portal: locked
+        Vendor: read-only, can print DO PDF
+        Portal: locked, pushed to Odoo
+        Odoo Receipt: set quantities populated
     end note
 ```
+
+---
+
+## Data Retention
+
+- Vendors can view PO data for **24 months** from PO creation date
+- Applies to **all statuses** equally: Waiting, Confirmed, Cancelled, Verified, Discrepancy
+- POs older than 24 months are **permanently deleted** from the portal database
+- A scheduled cleanup job runs periodically to enforce this rule
 
 ---
 
@@ -200,9 +219,12 @@ stateDiagram-v2
 | Term | Meaning |
 |---|---|
 | NCC | Nhà cung cấp (Vendor) |
-| DO | Delivery Order |
+| DO | Delivery Order — vendor's planned delivery document, edited and signed on portal |
+| Receipt | Phiếu nhập kho — Odoo's incoming shipment record, confirmed by store |
 | SL | Số lượng (Quantity) |
 | RFQ | Request for Quotation |
 | PO | Purchase Order |
-| Receipt | Phiếu nhập kho Odoo |
-| Cutoff | 23:00 đêm trước ngày giao — DO bị khóa sau mốc này |
+| Set Quantities | Pre-filled quantities in Odoo Receipt from vendor's DO (not yet qty_done) |
+| qty_done | Final received quantity, set only when store confirms Receipt in Odoo |
+| Verified | Portal status: store confirmed receipt, quantities match vendor's DO |
+| Discrepancy | Portal status: store confirmed receipt, quantities differ from vendor's DO |
