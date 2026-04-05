@@ -18,11 +18,12 @@ flowchart LR
     D1{Vendor confirms\nor rejects?}:::decision
     D1_NO([Vendor rejects RFQ\non Portal]):::vendor
     D1_CANCEL([Portal cancels RFQ\nin Odoo + email\nto PO creator]):::portal
+    D1_AUTO([Auto-cancel after\n7 days past\nExpected Arrival]):::portal
 
     V1([Vendor confirms PO\non Portal]):::vendor
     V2([DO auto-created\nVendor edits qty + date]):::vendor
     V3([Vendor signs DO\ndigitally on Portal]):::vendor
-    V4([Print DO PDF\nwith signature + barcode]):::vendor
+    V4([Print DO PDF\nVietnamese + barcode]):::vendor
     V5([Deliver goods\nto store with paper DO]):::vendor
 
     P1{{Portal pushes\nqty + date to Odoo\nReceipt}}:::portal
@@ -33,6 +34,7 @@ flowchart LR
 
     S1 --> S2 --> D1
     D1 -- Reject --> D1_NO --> D1_CANCEL
+    D1 -- No action --> D1_AUTO
     D1 -- Confirm --> V1 --> V2 --> V3 --> V4 --> V5
     V3 --> P1
     V5 --> I1 --> I2 --> I3
@@ -65,15 +67,15 @@ flowchart TD
         B7 --> B8[Portal calls button_cancel\non purchase.order via XML-RPC]
         B8 --> B9[RFQ Cancelled in Odoo\nstate: sent -> cancel]
         B9 --> B10[Email to PO creator\nRFQ rejected by vendor]
-        B3 -- No action --> B3X([RFQ expires\nif Order Deadline passes])
+        B3 -- No action\n7 days past\nExpected Arrival --> B3X[Portal auto-cancels\nbutton_cancel via XML-RPC]
     end
 
     subgraph DO["Delivery Order — Vendor Portal"]
-        C1[1 DO auto-created per confirmed PO\nStatus: Draft] --> C2[Vendor edits DO on portal\nSingle delivery date + quantities\nQty <= ordered qty]
+        C1[1 DO auto-created per confirmed PO\nStatus: Draft] --> C2[Vendor edits DO on portal\nSingle delivery date + quantities\nQty <= ordered qty\nDelivery qty always in base UoM]
         C2 --> C3[Vendor clicks Sign DO\nDraws digital signature\nOptional comment]
         C3 --> C4[DO status: Signed\nLocked — no further edits]
         C4 --> C5[Portal pushes to Odoo\nDelivery date + set quantities\ninto Receipt]
-        C4 --> C6[Vendor can print DO PDF\nVietnamese, includes barcode\nCan print multiple times]
+        C4 --> C6[Vendor can print DO PDF\nVietnamese, PO as Code128 barcode\nCan print multiple times]
     end
 
     subgraph DELIVERY["Physical Delivery — Store"]
@@ -95,8 +97,12 @@ flowchart TD
     end
 
     subgraph RETURNS["Returns Flow"]
-        R1([Store creates RPO in Odoo]) --> R2[RPO appears on portal\nwith Goods Return Note]
-        R2 --> R3[Similar workflow to PO/DO]
+        R1([Store creates RPO in Odoo\nEmail sent to vendor]) --> R2[RPO appears on portal\nVendor sees return items]
+        R2 --> R3[Vendor sets pickup date\nand clicks Confirm\nCannot reject or change qty]
+        R3 --> R4[Vendor signs Return Note\ndigitally, prints RN PDF]
+        R4 --> R5[Vendor goes to store\nto collect returned goods\nBoth sign 2 paper copies]
+        R5 --> R6[Store confirms return\nreceipt in Odoo]
+        R6 --> R7[RN status -> Done]
     end
 
     %% Connect major phases
@@ -130,15 +136,18 @@ sequenceDiagram
         Portal->>Odoo: button_cancel on purchase.order
         Odoo-->>Portal: PO state: sent -> cancel
         Portal->>Store: Email to PO creator: RFQ rejected
+    else No action for 7 days past Expected Arrival
+        Portal->>Odoo: Auto button_cancel on purchase.order
+        Odoo-->>Portal: PO state: sent -> cancel
     end
 
     Note over Vendor,Store: ── Phase 2: Delivery Order (Portal) ──
     Portal->>Vendor: DO available (Draft) — editable
-    Vendor->>Portal: Edit DO: single delivery date + quantities (qty <= ordered)
+    Vendor->>Portal: Edit DO: single delivery date + quantities (qty <= ordered, in base UoM)
     Vendor->>Portal: Sign DO digitally + optional comment
     Portal->>Portal: Lock DO (status: Signed)
     Portal->>Odoo: Push delivery date + set quantities into Receipt
-    Portal->>Vendor: DO PDF available for printing (Vietnamese, with PO barcode)
+    Portal->>Vendor: DO PDF available (Vietnamese, PO as Code128 barcode)
     Note over Portal: No email sent on sign
 
     Note over Vendor,Store: ── Phase 3: Physical Delivery ──
@@ -152,8 +161,18 @@ sequenceDiagram
     Portal->>Portal: DO status -> Done, final received qty stored
     Portal->>Vendor: Email: receipt confirmed (alerts if any qty differs)
 
-    Note over Vendor,Store: ── Phase 5: Export ──
-    Vendor->>Portal: Export PDF or CSV for invoicing
+    Note over Vendor,Store: ── Phase 5: Returns ──
+    Store->>Odoo: Create RPO
+    Odoo->>Vendor: Email: return order notification
+    Vendor->>Portal: View RPO, set pickup date, click Confirm
+    Vendor->>Portal: Sign Return Note digitally
+    Portal->>Vendor: RN PDF available for printing
+    Vendor->>Store: Collect returned goods with printed RN (2 copies)
+    Store->>Odoo: Confirm return receipt
+    Odoo->>Portal: RN status -> Done
+
+    Note over Vendor,Store: ── Phase 6: Export ──
+    Vendor->>Portal: Export PDF (individual or summary) or CSV
 
     Note over Vendor,Store: ── Exception: Unlock DO ──
     Portal->>Vendor: Admin unlocks DO (status -> Draft) + email notification
@@ -170,7 +189,7 @@ Portal and Odoo maintain **different status labels**. Odoo's base behaviour is n
 |---|---|---|---|
 | **Waiting** | `sent` | Store sends RFQ | Confirm or Reject |
 | **Confirmed** | `purchase` | Vendor confirms PO on portal | View DO, export data |
-| **Cancelled** | `cancel` | Vendor rejects, or store cancels | Read-only |
+| **Cancelled** | `cancel` | Vendor rejects, store cancels, or auto-cancel (7 days past Expected Arrival) | Read-only |
 
 ---
 
@@ -193,9 +212,8 @@ stateDiagram-v2
     Cancelled --> [*]
 
     note right of Draft
-        Vendor: can edit delivery date + quantities
-        Quantities must be <= ordered qty
-        Single date for entire DO
+        Vendor: can edit single delivery date + quantities
+        Quantities must be <= ordered qty (in base UoM)
         Portal: editable
     end note
 
@@ -220,25 +238,57 @@ stateDiagram-v2
 
 ---
 
-## Returns: RPO & Goods Return Note
+## RN (Return Note) State Machine
 
-The portal supports returns via **Return Purchase Order (RPO)** and **Goods Return Note (GRN)**, mirroring the PO/DO flow.
+```mermaid
+stateDiagram-v2
+    [*] --> Draft : RPO created by store,\nRN auto-created
+
+    Draft --> Signed : Vendor sets pickup date,\nconfirms, signs digitally
+
+    Signed --> Done : Store confirms return\nreceipt in Odoo
+
+    Done --> [*]
+
+    note right of Draft
+        Vendor: can set pickup date only
+        Cannot change quantities
+        Cannot reject
+    end note
+
+    note right of Signed
+        Vendor: read-only, can print RN PDF
+        Portal: locked
+    end note
+
+    note right of Done
+        Return completed
+        Can export PDF/CSV
+    end note
+```
+
+---
+
+## Returns: RPO & Return Note (Bien Ban Tra Hang)
 
 | Concept | Purchase Flow | Returns Flow |
 |---|---|---|
 | Order | PO (Purchase Order) | RPO (Return Purchase Order) |
-| Delivery document | DO (Delivery Order) | GRN (Goods Return Note) |
-| Statuses | Same lifecycle | Same lifecycle |
-
-> Detailed RPO/GRN workflow to be specified after core PO/DO flow is finalized.
+| Delivery document | DO (Delivery Order) | RN (Return Note / Bien Ban Tra Hang) |
+| Vendor can edit | Delivery date + quantities | Pickup date only (no qty change) |
+| Vendor can reject | Yes | No |
+| Signature | Required (DO) | Required (RN) |
+| Printable PDF | Yes (DO PDF) | Yes (RN PDF, same format) |
+| Physical exchange | Vendor delivers to store | Vendor collects from store |
 
 ---
 
 ## Data Retention
 
 - Vendors can view PO data for **24 months** from PO creation date
-- Applies to **all statuses** equally: Waiting, Confirmed, Cancelled
+- Applies to **all PO statuses** equally: Waiting, Confirmed, Cancelled
 - Applies to **all DO statuses**: Draft, Signed, Done, Cancelled
+- Applies to returns (RPO/RN) equally
 - POs older than 24 months are **permanently deleted** from the portal database
 - A scheduled cleanup job runs periodically to enforce this rule
 
@@ -247,9 +297,11 @@ The portal supports returns via **Return Purchase Order (RPO)** and **Goods Retu
 ## Data Export
 
 - Vendors can export data as **PDF** or **CSV**
-- Scope: PO number, DO quantities, receipt quantities, delivery date, receipt confirmation date
+- PDF: individual document or summary report of multiple records
+- CSV: bulk data for vendor to edit and import into their systems
+- UI supports selecting single or multiple records for export
 - Date range filter available
-- Includes both regular POs/DOs and returns (RPO/GRN)
+- Includes both regular POs/DOs and returns (RPO/RN)
 
 ---
 
@@ -259,11 +311,12 @@ The portal supports returns via **Return Purchase Order (RPO)** and **Goods Retu
 |---|---|
 | NCC | Nhà cung cấp (Vendor) |
 | DO | Delivery Order — vendor's planned delivery document, edited and signed on portal |
-| GRN | Goods Return Note — return equivalent of DO |
+| RN | Return Note / Bien Ban Tra Hang — return equivalent of DO, signed by vendor |
 | Receipt | Phiếu nhập kho — Odoo's incoming shipment record, confirmed by store |
-| RPO | Return Purchase Order — return equivalent of PO |
+| RPO | Return Purchase Order — return equivalent of PO, created by store |
 | SL | Số lượng (Quantity) |
 | RFQ | Request for Quotation |
 | PO | Purchase Order |
+| UoM | Unit of Measure. Base UoM (e.g., Chai, Kg) vs Delivered UoM (e.g., Thùng 12 Chai) |
 | Set Quantities | Pre-filled quantities in Odoo Receipt from vendor's DO (not yet qty_done) |
 | qty_done | Final received quantity, set only when store confirms Receipt in Odoo |

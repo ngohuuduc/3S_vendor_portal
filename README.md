@@ -5,7 +5,7 @@
 
 ## Project Summary
 
-An independent bilingual (Vietnamese + English) web portal serving two types of users: **vendors** and **portal admins**. Vendors log in using their Odoo Vendor ID, confirm or reject Sent RFQs, edit Delivery Orders (quantities and delivery date), digitally sign and print DOs, and track delivery status through to store receipt confirmation. The portal also supports returns via Return Purchase Orders (RPO) and Goods Return Notes. Vendors can export data as PDF or CSV for invoicing and reconciliation. Portal admins share the same interface but have additional access to view all vendors, all POs and DOs across the system, trigger the Odoo sync manually, unlock signed DOs, and download any vendor's signed PDF. The portal runs on a separate VM from Odoo and integrates via Odoo's XML-RPC API using a dedicated service account. **Vendors only access the portal; stores only access Odoo.** All email is delivered via AWS SES.
+An independent bilingual (Vietnamese + English) web portal serving two types of users: **vendors** and **portal admins**. Vendors log in using their **email address**, confirm or reject Sent RFQs, edit Delivery Orders (quantities and delivery date), digitally sign and print DOs, and track delivery status through to store receipt confirmation. The portal also supports returns via Return Purchase Orders (RPO) and Goods Return Notes. Vendors can export data as PDF or CSV for invoicing and reconciliation. Portal admins share the same interface but have additional access to view all vendors, all POs and DOs across the system, trigger the Odoo sync manually, unlock signed DOs, and download any vendor's signed PDF. The portal runs on a separate VM from Odoo and integrates via Odoo's XML-RPC API using a dedicated service account. **Vendors only access the portal; stores only access Odoo.** All email is delivered via AWS SES.
 
 ---
 
@@ -15,13 +15,13 @@ An independent bilingual (Vietnamese + English) web portal serving two types of 
 |---|---|
 | Odoo version | 16 Community Edition |
 | Odoo API protocol | XML-RPC (Python `xmlrpc.client`) |
-| Vendor login identifier | `res.partner.id` (integer, assigned by Odoo) |
+| Vendor login identifier | Email address (synced from Odoo `res.partner.email`) |
 | Vendor password | Portal-owned, stored in portal PostgreSQL only |
 | Profile data source | One-way sync from Odoo `res.partner` (read only) |
 | Account provisioning | Auto from Odoo partners where `supplier_rank > 0` |
 | Portal language | Vietnamese + English (bilingual, user-switchable) |
 | HTTP client (frontend) | Native `fetch` API — no axios or third-party HTTP lib |
-| Portal PO statuses | Waiting (`sent`), Confirmed (`purchase`), Cancelled (`cancel`) — Draft (`draft`) is not shown |
+| Portal PO statuses | Waiting (`sent`), Confirmed (`purchase`), Cancelled (`cancel`) — Draft (`draft`) is not shown. Auto-cancel after 7 days past Expected Arrival if vendor has not confirmed or rejected |
 | Portal DO statuses | Draft, Signed, Done, Cancelled |
 | Odoo PO states (unchanged) | RFQ / RFQ Sent / Purchase Order / Cancelled — portal does not modify Odoo's base behaviour |
 | DO per PO | Exactly 1 DO auto-created per confirmed PO — vendor cannot create additional DOs |
@@ -31,14 +31,16 @@ An independent bilingual (Vietnamese + English) web portal serving two types of 
 | DO signing | Digital signature on portal locks the DO, pushes delivery date + set quantities to Odoo Receipt |
 | DO printing | After signing, vendor can print DO PDF (includes signature) multiple times |
 | DO PDF language | Vietnamese only — all printed DO PDFs use Vietnamese labels |
-| DO PDF content | PO barcode (scannable by handheld), vendor info (ID, Tax ID, mobile, email), store ID, PO confirmation date, delivery date, product table with specific columns |
+| DO PDF content | PO number encoded as Code128 barcode (scannable by handheld), vendor info (ID, Tax ID, mobile, email), store ID (from `stock.warehouse.code`), PO confirmation date, delivery date, product table with base UoM + delivered UoM columns |
+| UoM handling | Base UoM (e.g., Chai, Kg) and Delivered UoM (e.g., Thùng 12 Chai). Delivery qty is always in base UoM. Vendor adjusts qty in base UoM |
 | Receipt confirmation | Store confirms Receipt in Odoo — sets final qty_done. DO status becomes Done, showing final received amounts |
-| Returns | Supported via RPO (Return Purchase Order) + Goods Return Note — similar flow to PO/DO |
+| Returns | RPO (Return Purchase Order) + RN (Return Note / Biên Bản Trả Hàng). Vendor can only set pickup date and confirm — cannot change quantities. Must sign and print RN like DO |
+| PO auto-cancel | If vendor does not confirm or reject within 7 days past Expected Arrival date, PO is auto-cancelled |
 | Vendor PO confirmation | Vendor confirms Sent RFQ via portal → portal calls `button_confirm` on `purchase.order` in Odoo (no email notification) |
 | Vendor RFQ rejection | Vendor rejects Sent RFQ via portal → portal calls `button_cancel` on `purchase.order` in Odoo + email to PO creator |
 | Post-signature locking | DO locked after vendor signs — portal admin (buyer) can unlock directly in the portal (vendor notified by email, no reason required) |
 | Data retention | 24 months — POs older than 24 months are permanently deleted from portal DB. Applies to all statuses |
-| Data export | Vendors can export data as PDF or CSV for end-of-period invoicing and reconciliation |
+| Data export | Vendors can export as PDF (individual or summary) or CSV. Single or bulk export. Date range filter available |
 | Backorder handling | Vendor submits qty only — store validates and decides in Odoo |
 | Admin role | Separate `admin_users` table, password set via env variable initially |
 | Admin capabilities | View all vendors, trigger sync, view all POs/DOs, unlock signed DOs, download any PDF |
@@ -49,7 +51,7 @@ An independent bilingual (Vietnamese + English) web portal serving two types of 
 | Vendor comment on DO | Free-text note added when vendor signs the DO |
 | PDF retention | 24 months — matching PO data retention |
 | Responsive design | Works on both desktop and mobile equally |
-| Vendor accounts | One account per Odoo partner — no multi-user per company |
+| Vendor accounts | 1 Odoo partner = 1 portal account (1 email login, 1 phone, 1 contact name). No multi-user per vendor |
 | Profile changes | All profile changes must go through Odoo — admin cannot edit in portal |
 | Admin language | Bilingual (Vietnamese + English) — same as vendor portal |
 | SSL / TLS | Handled at infrastructure level (load balancer / reverse proxy) |
@@ -92,8 +94,8 @@ Nginx (reverse proxy + TLS termination)
 ## Data Flow Summary
 
 ### Authentication flow
-1. Vendor enters their Vendor ID and password on the login page
-2. Backend looks up `vendor_users` by `odoo_partner_id`
+1. Vendor enters their **email address** and password on the login page
+2. Backend looks up `vendor_users` by `email`
 3. Password verified with bcrypt — same error message for all failure cases
 4. On success, issues a JWT access token (30 min) and refresh token (7 days)
 5. All subsequent requests carry the access token in the `Authorization` header
@@ -102,7 +104,7 @@ Nginx (reverse proxy + TLS termination)
 
 ### Profile sync flow
 1. Scheduled job runs every 6 hours, reads `res.partner` where `supplier_rank > 0`
-2. **New partner:** creates `vendor_users` row (no password, inactive), generates 24h invite token, sends welcome email via AWS SES containing the Vendor ID and set-password link
+2. **New partner:** creates `vendor_users` row (no password, inactive), generates 24h invite token, sends welcome email via AWS SES containing the vendor's email (login) and set-password link
 3. **Existing partner:** updates profile fields only — `hashed_password` is never touched
 4. **Partner deactivated in Odoo:** sets `is_active = FALSE` — vendor can no longer log in
 5. Partners with no email are skipped and logged for manual follow-up
@@ -150,12 +152,12 @@ This section describes the portal's behaviour in plain business terms, intended 
 1. The portal sync job runs every 6 hours and detects the new vendor in Odoo
 2. A portal account is created, linked to the vendor's Odoo ID
 3. The vendor receives a **Welcome Email** (in Vietnamese by default) containing:
-   - Their **email login** — the email address they will use to log in
+   - Their **email address** — which they will use to log in
    - A **set-password link** valid for 24 hours
 4. The vendor clicks the link, sets their own password, and their account becomes active
-5. From this point, the vendor can log in at any time using their Vendor ID and password
+5. From this point, the vendor can log in at any time using their email and password
 
-**If the vendor misses the 24h window:** they use the "Forgot Password" option on the login page, enter their Vendor ID, and receive a new reset link by email.
+**If the vendor misses the 24h window:** they use the "Forgot Password" option on the login page, enter their email, and receive a new reset link.
 
 **If the vendor has no email in Odoo:** the sync job skips them and logs the case. The internal team must add an email to the Odoo partner record — the account will be created on the next sync cycle.
 
@@ -187,6 +189,11 @@ Draft RFQs are not shown. Vendors can view PO data for **24 months** from creati
 - Odoo updates the PO state from `sent` to `cancel`
 - Portal sends an email notification to the PO creator (the store staff who made the RFQ) informing them the RFQ was rejected
 - The store must create a new RFQ if they wish to re-order — rejection is final
+
+**Auto-cancellation:**
+- If a vendor does not confirm or reject a Waiting PO within **7 days past the Expected Arrival date** (`date_planned`), the portal automatically cancels it by calling `button_cancel` on `purchase.order` in Odoo
+- A scheduled job checks daily for expired Waiting POs and cancels them
+- No email is sent on auto-cancel — the PO simply moves to Cancelled status
 
 **Searching and filtering:**
 - Vendor can search by PO number (e.g. typing "PO004" filters the list instantly)
@@ -326,25 +333,33 @@ It is equally important for stakeholders to understand the boundaries of the por
 
 ---
 
-### 8. Returns: RPO & Goods Return Note
+### 8. Returns: RPO & Return Note (Bien Ban Tra Hang)
 
-The portal supports a returns workflow mirroring the purchase flow. When a store needs to return goods to a vendor, the process is handled through a **Return Purchase Order (RPO)** and a **Goods Return Note (GRN)**.
+The portal supports a returns workflow. When a store needs to return goods to a vendor, the process is handled through a **Return Purchase Order (RPO)** and a **Return Note (RN / Bien Ban Tra Hang)**.
 
-**How returns work:**
-1. Store creates a Return Purchase Order (RPO) in Odoo — this is the return equivalent of a PO
-2. The RPO appears on the vendor portal with a linked Goods Return Note (GRN) — the return equivalent of a DO
-3. Vendor views the GRN on the portal, which lists the products and quantities being returned
-4. The return delivery and receipt follow a similar workflow to the regular DO/Receipt flow
+**Returns workflow:**
+1. Store creates a Return Purchase Order (RPO) in Odoo
+2. Odoo sends an email to the vendor notifying them of the return order
+3. RPO appears on the vendor portal — vendor can see the products and quantities being returned
+4. Vendor sets a **pickup date** (single date for entire RN) — this is when they will come to collect the returned goods
+5. Vendor clicks **"Confirm"** — the RPO is confirmed. **Vendor cannot reject or cancel an RPO**
+6. Vendor **signs the RN digitally** (same signature flow as DO) and can **print the RN PDF** (same format as DO PDF)
+7. Vendor goes to the store on the pickup date to collect the returned goods, bringing the printed RN (2 copies, both parties sign)
+8. Store confirms the return receipt in Odoo
+9. RN status becomes Done on the portal
 
-**RPO Statuses (portal):** Waiting, Confirmed, Cancelled — same as PO statuses
+**Key differences from PO/DO flow:**
+- Vendor **cannot change quantities** — only the pickup date
+- Vendor **cannot reject** an RPO — they can only confirm and set a pickup date
+- No auto-cancel rule for RPOs (unlike POs which auto-cancel after 7 days)
 
-**GRN Statuses (portal):** Draft, Signed, Done, Cancelled — same as DO statuses
+**RPO Statuses (portal):** Waiting, Confirmed — no Cancelled status for RPOs
+
+**RN Statuses (portal):** Draft, Signed, Done — same lifecycle as DO (except no Cancelled)
 
 **Visibility:** Returns are shown alongside regular POs in the vendor's portal, clearly labelled as returns. Vendors can filter to view only returns or only regular POs.
 
 **Export:** Return data is included in the vendor's PDF/CSV export for reconciliation.
-
-> **Note:** The detailed RPO/GRN workflow, API endpoints, and database tables will be specified after the core PO/DO flow is finalized. The returns flow intentionally mirrors the PO/DO flow to keep the system consistent and simple.
 
 ---
 
@@ -353,8 +368,10 @@ The portal supports a returns workflow mirroring the purchase flow. When a store
 Vendors can export delivery and receipt data for end-of-period invoicing and reconciliation.
 
 **Export formats:**
-- **PDF** — formatted report suitable for printing and archival
-- **CSV** — machine-readable format for import into accounting systems
+- **PDF** — formatted report suitable for printing and archival. Two modes:
+  - **Individual**: export a single PO/DO or RPO/RN as a standalone PDF
+  - **Summary**: export a table of all selected POs/DOs in a date range as one PDF
+- **CSV** — machine-readable format for vendor to edit and import into their own systems
 
 **Export scope (all included):**
 - PO number
@@ -364,7 +381,12 @@ Vendors can export delivery and receipt data for end-of-period invoicing and rec
 - Receipt confirmation date
 - Date range filter available (e.g., "export all data from March 2026")
 
-**Export includes both regular POs/DOs and returns (RPO/GRN).**
+**Export UI:**
+- Vendor can select individual records to export, or select multiple records for bulk export
+- Bulk export generates a single file (PDF summary or CSV) containing all selected records
+- Export button available both on the dashboard (bulk) and on individual PO/DO detail pages
+
+**Export includes both regular POs/DOs and returns (RPO/RN).**
 
 ---
 
@@ -446,11 +468,13 @@ vendor-portal/
 ### Odoo models in scope
 | Model | Purpose | Key fields |
 |---|---|---|
-| `res.partner` | Vendor profile sync | `id`, `name`, `email`, `company_name`, `phone`, `supplier_rank` |
-| `purchase.order` | PO list, detail, confirmation, and rejection | `name`, `partner_id`, `state`, `date_order`, `amount_total`, `order_line`, `picking_ids` — `button_confirm` or `button_cancel` called on vendor action |
-| `purchase.order.line` | PO line items | `product_id`, `name`, `product_qty`, `qty_received`, `price_unit` |
+| `res.partner` | Vendor profile sync | `id`, `name`, `email`, `company_name`, `phone`, `mobile`, `vat` (Tax ID), `supplier_rank` |
+| `purchase.order` | PO list, detail, confirmation, rejection | `name`, `partner_id`, `state`, `date_order`, `date_planned` (Expected Arrival), `amount_total`, `order_line`, `picking_ids`, `user_id` (PO creator for email) — `button_confirm` or `button_cancel` called on vendor action |
+| `purchase.order.line` | PO line items | `product_id`, `name`, `product_qty`, `qty_received`, `price_unit`, `product_uom` (delivered UoM) |
+| `product.product` | Product info for DO PDF | `id`, `name`, `barcode`, `uom_id` (base UoM) |
 | `stock.picking` | Receipt header | `name`, `state`, `scheduled_date`, `origin`, `move_line_ids` |
 | `stock.move.line` | Receipt line items | `product_id`, `product_uom_qty`, `qty_done`, `lot_id`, `state` |
+| `stock.warehouse` | Store ID for DO PDF | `code` (short name, used as Store ID on printed DO) |
 
 ### Odoo 16 CE field name gotchas
 - `stock.move.line.qty_done` → renamed to `quantity` in Odoo 17+
@@ -495,12 +519,13 @@ vendor-portal/
 | Column | Type | Notes |
 |---|---|---|
 | `id` | serial PK | internal portal ID |
-| `odoo_partner_id` | integer, unique | login identifier shown to vendor |
+| `odoo_partner_id` | integer, unique | Odoo partner ID (used for data scoping, not for login) |
+| `email` | varchar, unique | **login identifier** — synced from Odoo `res.partner.email` |
 | `hashed_password` | varchar | NULL until invite accepted |
-| `full_name` | varchar | synced from Odoo, never manually edited |
-| `email` | varchar | synced from Odoo, used for emails only |
+| `full_name` | varchar | synced from Odoo — contact person name |
 | `company_name` | varchar | synced from Odoo |
-| `phone` | varchar | synced from Odoo |
+| `phone` | varchar | synced from Odoo — mobile/phone number |
+| `tax_id` | varchar | synced from Odoo `res.partner.vat` — for DO PDF |
 | `preferred_language` | varchar | `'vi'` or `'en'`, set by vendor, default `'vi'` |
 | `is_active` | boolean | FALSE until first password set |
 | `created_at` | timestamp | |
@@ -571,19 +596,19 @@ vendor-portal/
 ### Auth endpoints
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/api/auth/login` | Vendor ID + password → access + refresh tokens (role: `vendor`) |
+| POST | `/api/auth/login` | Email + password → access + refresh tokens (role: `vendor`) |
 | POST | `/api/admin/auth/login` | Username + password → access + refresh tokens (role: `admin`) |
 | POST | `/api/auth/refresh` | Refresh token → new access token (preserves role) |
 | POST | `/api/auth/set-password` | First-time invite or password reset via token (vendors only) |
-| POST | `/api/auth/forgot-password` | Sends reset email via AWS SES by Vendor ID |
+| POST | `/api/auth/forgot-password` | Sends reset email via AWS SES by email address |
 | POST | `/api/auth/logout` | Blacklists refresh token in Redis |
 
 ### JWT role claim
 The JWT access token carries a `role` field (`vendor` or `admin`). All admin-only endpoints check for `role == 'admin'` via a dedicated FastAPI dependency. Vendor endpoints check for `role == 'vendor'`. A vendor token cannot access admin routes, and an admin token cannot be used to impersonate a vendor.
 
 ### Security considerations
-- **Timing-safe login:** always run `bcrypt.verify` even when the Vendor ID does not exist
-- **Consistent error messages:** same message for unknown ID and wrong password — never reveal whether the ID exists
+- **Timing-safe login:** always run `bcrypt.verify` even when the email does not exist
+- **Consistent error messages:** same message for unknown email and wrong password — never reveal whether the email exists
 - **Token blacklist:** on logout, refresh token is added to a Redis set with TTL matching remaining token lifetime
 - **Invite token expiry:** 24 hours. If expired, vendor must request a new one via forgot-password
 
@@ -612,7 +637,14 @@ The JWT access token carries a `role` field (`vendor` or `admin`). All admin-onl
 | PATCH | `/api/delivery-orders/{do_id}/lines` | Update quantities + delivery date on the DO (blocked if signed/locked); qty must be <= ordered qty |
 | POST | `/api/delivery-orders/{do_id}/sign` | Submit signature PNG + optional comment, lock DO, push to Odoo Receipt, generate PDF |
 | GET | `/api/delivery-orders/{do_id}/pdf` | Download signed DO PDF (available post-signature, can be called multiple times for printing) |
-| GET | `/api/export` | Export delivery/receipt data as PDF or CSV. Query params: `format` (pdf/csv), `date_from`, `date_to`. Includes POs, DOs, receipts, and returns |
+| GET | `/api/return-orders` | Paginated RPO list for current vendor |
+| GET | `/api/return-orders/{id}` | RPO detail with return lines and linked Return Note |
+| GET | `/api/return-notes/{rn_id}` | Return Note detail with product lines and pickup date |
+| PATCH | `/api/return-notes/{rn_id}/pickup-date` | Set or update pickup date on the RN (blocked if signed) |
+| POST | `/api/return-notes/{rn_id}/confirm` | Confirm the RPO — vendor agrees to pick up returned goods |
+| POST | `/api/return-notes/{rn_id}/sign` | Submit signature PNG, lock RN, generate PDF |
+| GET | `/api/return-notes/{rn_id}/pdf` | Download signed RN PDF (same format as DO PDF) |
+| GET | `/api/export` | Export data as PDF or CSV. Query params: `format` (pdf/csv), `type` (individual/summary), `ids` (for bulk), `date_from`, `date_to`. Includes POs, DOs, RPOs, RNs |
 | POST | `/api/webhooks/odoo/receipt-validated` | Webhook receiver: Odoo notifies portal when Receipt is validated — triggers DO status → Done + vendor email |
 
 ### Admin-only endpoints
@@ -700,14 +732,14 @@ All emails are sent in the vendor's `preferred_language` for vendor-facing email
 The printed DO PDF includes the following sections, all in Vietnamese:
 
 **Header:**
-- PO number displayed as a **barcode** (scannable by store's handheld device)
-- Vendor ID (Mã NCC)
-- Vendor Tax ID (Mã số thuế)
-- Vendor mobile phone (Số điện thoại)
-- Vendor contact email (Email liên hệ)
-- Store ID (Mã cửa hàng)
-- PO Confirmation Date (Ngày xác nhận đơn hàng)
-- Delivery Date (Ngày giao hàng)
+- PO number displayed as a **Code128 barcode** (scannable by store's handheld device)
+- Vendor ID / Mã NCC (`res.partner.id`)
+- Vendor Tax ID / Mã số thuế (`res.partner.vat`)
+- Vendor mobile phone / Số điện thoại (`res.partner.phone` or `mobile`)
+- Vendor contact email / Email liên hệ (`res.partner.email`)
+- Store ID / Mã cửa hàng (`stock.warehouse.code` — the warehouse short name)
+- PO Confirmation Date / Ngày xác nhận đơn hàng
+- Delivery Date / Ngày giao hàng (the single date set by vendor on the DO)
 
 **Product table columns:**
 
@@ -716,9 +748,9 @@ The printed DO PDF includes the following sections, all in Vietnamese:
 | 1 | Số thứ tự | Line number | Sequential row number |
 | 2 | Mã vạch | Barcode | Product barcode |
 | 3 | Tên sản phẩm | Product name | Product description |
-| 4 | Đơn vị cơ sở | Base UoM | Base unit of measure |
-| 5 | Đơn vị giao hàng | Delivered UoM | Delivery unit of measure |
-| 6 | Số lượng giao (theo đơn vị cơ sở) | Delivery qty (base UoM) | Quantity vendor plans to deliver |
+| 4 | Đơn vị cơ sở | Base UoM | Base unit of measure (e.g., Chai, Kg) |
+| 5 | Đơn vị giao hàng | Delivered UoM | Delivery unit of measure (e.g., Thùng 12 Chai) |
+| 6 | Số lượng giao (theo đơn vị cơ sở) | Delivery qty (base UoM) | Quantity vendor plans to deliver, always in base UoM |
 | 7 | Số lượng thực nhận (theo đơn vị cơ sở) | Received qty (base UoM) | Left blank — filled by store on paper |
 | 8 | SL chênh lệch | Discrepancy qty | Left blank — for store to note differences |
 | 9 | Ghi chú | Notes | Left blank — for store notes |
@@ -753,20 +785,26 @@ The printed DO PDF includes the following sections, all in Vietnamese:
 ### Pages & routes
 | Route | Page | Role | Description |
 |---|---|---|---|
-| `/login` | Login | Both | Vendor ID (number input) + password + language toggle |
+| `/login` | Login | Both | Email + password + language toggle |
 | `/admin/login` | Admin Login | Admin | Username + password (separate login page) |
 | `/set-password` | Set Password | Vendor | First-time invite and forgot-password reset |
-| `/forgot-password` | Forgot Password | Vendor | Enter Vendor ID to receive reset email |
-| `/dashboard` | Dashboard | Vendor | PO list with search/filter bar and portal status badges (Waiting/Confirmed/Cancelled/Verified/Discrepancy) |
+| `/forgot-password` | Forgot Password | Vendor | Enter email to receive reset link |
+| `/dashboard` | Dashboard | Vendor | PO list with search/filter, status badges (Waiting/Confirmed/Cancelled), bulk export |
 | `/purchase-orders/:id` | PO Detail | Vendor | Order lines + linked DO + receipt comparison (vendor qty vs store qty) |
-| `/delivery-orders/:id` | DO Detail | Vendor | Product lines with editable delivery qty + date (locked if signed) |
-| `/delivery-orders/:id/sign` | Sign DO | Vendor | Signature pad + final confirmation step |
+| `/delivery-orders/:id` | DO Detail | Vendor | Product lines with editable delivery qty + single delivery date (locked if signed) |
+| `/delivery-orders/:id/sign` | Sign DO | Vendor | Signature pad + comment field + final confirmation step |
 | `/delivery-orders/:id/pdf` | DO PDF | Vendor | Download/print signed DO PDF (can print multiple times) |
-| `/pdfs` | PDF History | Vendor | List of all previously signed DO PDFs with download links |
+| `/returns` | Returns List | Vendor | RPO list with search/filter, status badges |
+| `/return-orders/:id` | RPO Detail | Vendor | Return lines + linked Return Note |
+| `/return-notes/:id` | RN Detail | Vendor | Return product lines + pickup date picker (qty read-only) |
+| `/return-notes/:id/sign` | Sign RN | Vendor | Signature pad + confirmation (same flow as DO) |
+| `/return-notes/:id/pdf` | RN PDF | Vendor | Download/print signed RN PDF |
+| `/export` | Export | Vendor | Select records (POs, DOs, RPOs, RNs), choose format (PDF/CSV), date range filter |
+| `/pdfs` | PDF History | Vendor | List of all signed DO + RN PDFs with download links |
 | `/profile` | Profile | Vendor | Read-only vendor profile + language preference |
-| `/admin/dashboard` | Admin Dashboard | Admin | Summary stats: vendor counts, pending DOs, sync status |
-| `/admin/vendors` | Vendor List | Admin | All vendor accounts with status, last login, DO counts |
-| `/admin/vendors/:id` | Vendor Detail | Admin | Specific vendor's POs and DOs (read-only drill-down) |
+| `/admin/dashboard` | Admin Dashboard | Admin | Summary stats: vendor counts, pending DOs/RNs, sync status |
+| `/admin/vendors` | Vendor List | Admin | All vendor accounts with status, last login, DO/RN counts |
+| `/admin/vendors/:id` | Vendor Detail | Admin | Specific vendor's POs, DOs, RPOs, RNs (read-only drill-down) |
 | `/admin/sync` | Sync Status | Admin | Last sync time, skipped vendors, manual trigger button |
 
 ### Admin dashboard content
@@ -854,7 +892,7 @@ The PO detail page shows the linked DO with its status. When the DO is Done (sto
 - A loading state is shown while the PDF is being generated server-side
 
 ### Key UX considerations
-- Login field label: **"Ma nha cung cap / Vendor ID"** with helper text explaining it was provided in the welcome email
+- Login field label: **"Email"** with helper text explaining it was provided in the welcome email
 - DO lines show ordered qty, delivery qty, and received qty (when available) side by side for easy comparison
 - Waiting POs show "Confirm PO" and "Reject" buttons prominently
 - Lock notice on signed DOs: "Phiếu giao hàng đã được ký / Delivery Order has been signed"
