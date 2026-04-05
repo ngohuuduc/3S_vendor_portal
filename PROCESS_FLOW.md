@@ -72,7 +72,7 @@ flowchart TD
 
     subgraph DO["Delivery Order — Vendor Portal"]
         C1[1 DO auto-created per confirmed PO\nStatus: Draft] --> C2[Vendor edits DO on portal\nSingle delivery date + quantities\nQty <= ordered qty\nDelivery qty always in base UoM]
-        C2 --> C3[Vendor clicks Sign DO\nDraws digital signature\nOptional comment]
+        C2 --> C3[Vendor clicks Sign DO\nDraws digital signature\nOptional comment\nQty only — cannot change UoM]
         C3 --> C4[DO status: Signed\nLocked — no further edits]
         C4 --> C5[Portal pushes to Odoo\nDelivery date + set quantities\ninto Receipt]
         C4 --> C6[Vendor can print DO PDF\nVietnamese, PO as Code128 barcode\nCan print multiple times]
@@ -98,8 +98,8 @@ flowchart TD
 
     subgraph RETURNS["Returns Flow"]
         R1([Store creates RPO in Odoo\nEmail sent to vendor]) --> R2[RPO appears on portal\nVendor sees return items]
-        R2 --> R3[Vendor sets pickup date\nand clicks Confirm\nCannot reject or change qty]
-        R3 --> R4[Vendor signs Return Note\ndigitally, prints RN PDF]
+        R2 --> R3[Vendor sets pickup date\nClicks Confirm & Sign\nCannot reject or change qty]
+        R3 --> R4[RN signed and locked\nVendor prints RN PDF]
         R4 --> R5[Vendor goes to store\nto collect returned goods\nBoth sign 2 paper copies]
         R5 --> R6[Store confirms return\nreceipt in Odoo]
         R6 --> R7[RN status -> Done]
@@ -143,7 +143,7 @@ sequenceDiagram
 
     Note over Vendor,Store: ── Phase 2: Delivery Order (Portal) ──
     Portal->>Vendor: DO available (Draft) — editable
-    Vendor->>Portal: Edit DO: single delivery date + quantities (qty <= ordered, in base UoM)
+    Vendor->>Portal: Edit DO: single delivery date + quantities (qty <= ordered, same UoM as PO)
     Vendor->>Portal: Sign DO digitally + optional comment
     Portal->>Portal: Lock DO (status: Signed)
     Portal->>Odoo: Push delivery date + set quantities into Receipt
@@ -164,8 +164,8 @@ sequenceDiagram
     Note over Vendor,Store: ── Phase 5: Returns ──
     Store->>Odoo: Create RPO
     Odoo->>Vendor: Email: return order notification
-    Vendor->>Portal: View RPO, set pickup date, click Confirm
-    Vendor->>Portal: Sign Return Note digitally
+    Vendor->>Portal: View RPO, set pickup date
+    Vendor->>Portal: Confirm & Sign Return Note (one step)
     Portal->>Vendor: RN PDF available for printing
     Vendor->>Store: Collect returned goods with printed RN (2 copies)
     Store->>Odoo: Confirm return receipt
@@ -213,7 +213,8 @@ stateDiagram-v2
 
     note right of Draft
         Vendor: can edit single delivery date + quantities
-        Quantities must be <= ordered qty (in base UoM)
+        Quantities must be <= ordered qty
+        UoM inherited from PO — cannot be changed
         Portal: editable
     end note
 
@@ -244,7 +245,7 @@ stateDiagram-v2
 stateDiagram-v2
     [*] --> Draft : RPO created by store,\nRN auto-created
 
-    Draft --> Signed : Vendor sets pickup date,\nconfirms, signs digitally
+    Draft --> Signed : Vendor sets pickup date,\nConfirm & Sign (one step)
 
     Signed --> Done : Store confirms return\nreceipt in Odoo
 
@@ -275,7 +276,7 @@ stateDiagram-v2
 |---|---|---|
 | Order | PO (Purchase Order) | RPO (Return Purchase Order) |
 | Delivery document | DO (Delivery Order) | RN (Return Note / Bien Ban Tra Hang) |
-| Vendor can edit | Delivery date + quantities | Pickup date only (no qty change) |
+| Vendor can edit | Delivery date + quantities (not UoM) | Pickup date only (no qty or UoM change) |
 | Vendor can reject | Yes | No |
 | Signature | Required (DO) | Required (RN) |
 | Printable PDF | Yes (DO PDF) | Yes (RN PDF, same format) |
@@ -317,6 +318,6 @@ stateDiagram-v2
 | SL | Số lượng (Quantity) |
 | RFQ | Request for Quotation |
 | PO | Purchase Order |
-| UoM | Unit of Measure. Base UoM (e.g., Chai, Kg) vs Delivered UoM (e.g., Thùng 12 Chai) |
+| UoM | Unit of Measure — single UoM per product line, inherited from PO (e.g., Thùng 12 Chai, Kg). Vendor cannot change UoM on DO |
 | Set Quantities | Pre-filled quantities in Odoo Receipt from vendor's DO (not yet qty_done) |
 | qty_done | Final received quantity, set only when store confirms Receipt in Odoo |
