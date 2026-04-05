@@ -193,7 +193,7 @@ Draft RFQs are not shown. Vendors can view PO data for **24 months** from creati
 **Auto-cancellation:**
 - If a vendor does not confirm or reject a Waiting PO within **7 days past the Expected Arrival date** (`date_planned`), the portal automatically cancels it by calling `button_cancel` on `purchase.order` in Odoo
 - A scheduled job checks daily for expired Waiting POs and cancels them
-- No email is sent on auto-cancel — the PO simply moves to Cancelled status
+- Email notification sent to **both vendor and PO creator (store)** when a PO is auto-cancelled
 
 **Searching and filtering:**
 - Vendor can search by PO number (e.g. typing "PO004" filters the list instantly)
@@ -311,10 +311,12 @@ If quantities were entered incorrectly and the vendor needs to resubmit, a porta
 | New vendor account created | Vendor | Vietnamese (default) | Vendor's email login + set-password link |
 | Password reset requested | Vendor | Vendor's preferred language | Reset link (24h expiry) |
 | Vendor rejects RFQ | PO creator (store staff) | Vietnamese | PO rejected + cancelled in Odoo |
+| PO auto-cancelled (7 days) | Vendor + PO creator | Vendor's pref lang / Vietnamese | PO auto-cancelled due to no response within 7 days past Expected Arrival |
 | Store confirms receipt | Vendor | Vendor's preferred language | Receipt confirmed notification. Alerts if any quantities differ between DO and receipt |
+| RPO created by store | Vendor | Sent by Odoo (Send by Email) | Return order notification — vendor should log into portal to confirm |
 | DO unlocked by admin | Vendor | Vendor's preferred language | Notification that DO has been unlocked for re-editing |
 
-**Note:** No email is sent when a vendor confirms a PO (the confirmation is pushed to Odoo in real-time) or when a vendor signs a DO (the data is pushed to Odoo automatically). The store email recipient is always the specific person who created the PO in Odoo, not a generic team inbox.
+**Note:** No email is sent when a vendor confirms a PO (the confirmation is pushed to Odoo in real-time) or when a vendor signs a DO/RN (the data is pushed to Odoo automatically). The store email recipient is always the specific person who created the PO in Odoo, not a generic team inbox. RPO email is sent by Odoo natively (not by the portal).
 
 ---
 
@@ -338,9 +340,8 @@ It is equally important for stakeholders to understand the boundaries of the por
 The portal supports a returns workflow. When a store needs to return goods to a vendor, the process is handled through a **Return Purchase Order (RPO)** and a **Return Note (RN / Bien Ban Tra Hang)**.
 
 **Returns workflow:**
-1. Store creates a Return Purchase Order (RPO) in Odoo
-2. Odoo sends an email to the vendor notifying them of the return order
-3. RPO appears on the vendor portal — vendor can see the products and quantities being returned
+1. Store creates a Return Purchase Order (RPO) in Odoo and clicks "Send by Email" — Odoo sends email to vendor asking them to log into the portal to confirm (same flow as PO/RFQ)
+2. RPO appears on the vendor portal — vendor can see the products and quantities being returned
 4. Vendor sets a **pickup date** (single date for entire RN) — this is when they will come to collect the returned goods
 5. Vendor clicks **"Confirm"** — the RPO is confirmed. **Vendor cannot reject or cancel an RPO**
 6. Vendor **signs the RN digitally** (same signature flow as DO) and can **print the RN PDF** (same format as DO PDF)
@@ -701,6 +702,7 @@ Every key action is written to the `audit_log` table synchronously within the sa
 | `login` | Successful vendor or admin login | actor type, actor ID, IP address, timestamp |
 | `po_confirm` | `POST /purchase-orders/:id/confirm` | PO ID, PO name, previous state (`sent`), new state (`purchase`) |
 | `po_reject` | `POST /purchase-orders/:id/reject` | PO ID, PO name, previous state (`sent`), new state (`cancel`) |
+| `po_auto_cancel` | Scheduled job (7 days past Expected Arrival) | PO ID, PO name, Expected Arrival date, days overdue |
 | `do_update` | `PATCH /delivery-orders/:id/lines` | DO ID, list of lines with old and new quantities |
 | `do_sign` | `POST /delivery-orders/:id/sign` | DO ID, vendor comment (if any), PDF path, signature path |
 | `do_unlock` | `POST /admin/delivery-orders/:id/unlock` | DO ID, admin who unlocked |
@@ -714,19 +716,23 @@ The audit log is viewable by admins via `GET /api/admin/audit-log`, filterable b
 |---|---|---|
 | New vendor synced | Vendor | Welcome email with vendor's email login + set-password link |
 | Forgot password requested | Vendor | Reset link (24h expiry) |
-| Vendor rejects RFQ | PO creator (store staff who made the RFQ) | PO rejected + cancelled in Odoo |
-| Store confirms receipt | Vendor | Receipt confirmed notification. Alerts if any quantities differ between DO and receipt |
-| DO unlocked by admin | Vendor | Notification that DO has been unlocked for re-editing |
+| Vendor rejects RFQ | PO creator (store staff) | PO rejected + cancelled in Odoo |
+| PO auto-cancelled (7 days) | Vendor + PO creator | PO auto-cancelled — no response within 7 days past Expected Arrival |
+| Store confirms receipt | Vendor | Receipt confirmed. Alerts if any quantities differ between DO and receipt |
+| DO unlocked by admin | Vendor | DO has been unlocked for re-editing |
+| RPO created by store | Vendor | Sent by Odoo natively (Send by Email button) — not via AWS SES |
 
-**Not emailed:** Vendor confirms PO (no email, data pushed to Odoo in real-time), Vendor signs DO (no email, data pushed to Odoo automatically).
+**Not emailed:** Vendor confirms PO (data pushed to Odoo in real-time), Vendor signs DO/RN (data pushed to Odoo automatically).
 
-All emails are sent in the vendor's `preferred_language` for vendor-facing emails, and in Vietnamese for store-facing emails. Store email is sent to the PO creator's email (from Odoo), not a generic inbox.
+All portal-sent emails use AWS SES in the vendor's `preferred_language` for vendor-facing emails, and in Vietnamese for store-facing emails. Store email goes to the PO creator's email (from Odoo `purchase.order.user_id`), not a generic inbox. RPO notification is sent by Odoo itself, not by the portal.
 
-### DO PDF pipeline approach
-1. Check `do_locks` — PDF only generated after signature is submitted
-2. Generate the DO document as HTML rendered to PDF with WeasyPrint, **in Vietnamese**
+### DO / RN PDF pipeline approach
+1. Check lock record — PDF only generated after signature is submitted
+2. Generate the document as HTML rendered to PDF with WeasyPrint, **in Vietnamese**
 3. Store the PDF on the server filesystem (retained for 24 months, matching PO retention)
 4. Return the PDF as a binary response with `Content-Disposition: attachment` — vendor can call this endpoint multiple times to print
+
+**Note:** The Return Note (RN) PDF uses the **same layout and content** as the DO PDF, with the title changed to "Bien Ban Tra Hang" and the delivery date replaced by the pickup date.
 
 ### DO PDF content specification
 The printed DO PDF includes the following sections, all in Vietnamese:
