@@ -5,7 +5,7 @@
 
 ## Project Summary
 
-An independent bilingual (Vietnamese + English) web portal serving two types of users: **vendors** and **portal admins**. Vendors log in using their Odoo Vendor ID, confirm or reject Sent RFQs, edit Delivery Orders (quantities and delivery date), digitally sign and print DOs, and track PO statuses through to final receipt confirmation. The portal distinguishes between the vendor's Delivery Order (what they plan to deliver) and the store's Receipt (what they actually received in Odoo) — giving vendors visibility into both sides. Portal admins share the same interface but have additional access to view all vendors, all POs and DOs across the system, trigger the Odoo sync manually, unlock signed DOs, and download any vendor's signed PDF. The portal runs on a separate VM from Odoo and integrates exclusively via Odoo's XML-RPC API (portal → Odoo) and webhooks (Odoo → portal) using a dedicated service account. **Vendors only access the portal; stores only access Odoo.** All email is delivered via AWS SES.
+An independent bilingual (Vietnamese + English) web portal serving two types of users: **vendors** and **portal admins**. Vendors log in using their Odoo Vendor ID, confirm or reject Sent RFQs, edit Delivery Orders (quantities and delivery date), digitally sign and print DOs, and track delivery status through to store receipt confirmation. The portal also supports returns via Return Purchase Orders (RPO) and Goods Return Notes. Vendors can export data as PDF or CSV for invoicing and reconciliation. Portal admins share the same interface but have additional access to view all vendors, all POs and DOs across the system, trigger the Odoo sync manually, unlock signed DOs, and download any vendor's signed PDF. The portal runs on a separate VM from Odoo and integrates via Odoo's XML-RPC API using a dedicated service account. **Vendors only access the portal; stores only access Odoo.** All email is delivered via AWS SES.
 
 ---
 
@@ -21,37 +21,41 @@ An independent bilingual (Vietnamese + English) web portal serving two types of 
 | Account provisioning | Auto from Odoo partners where `supplier_rank > 0` |
 | Portal language | Vietnamese + English (bilingual, user-switchable) |
 | HTTP client (frontend) | Native `fetch` API — no axios or third-party HTTP lib |
-| Portal PO statuses | Waiting (`sent`), Confirmed (`purchase`), Cancelled (`cancel`), Verified (receipt done, qty match), Discrepancy (receipt done, qty mismatch) — Draft (`draft`) is not shown |
+| Portal PO statuses | Waiting (`sent`), Confirmed (`purchase`), Cancelled (`cancel`) — Draft (`draft`) is not shown |
+| Portal DO statuses | Draft, Signed, Done, Cancelled |
 | Odoo PO states (unchanged) | RFQ / RFQ Sent / Purchase Order / Cancelled — portal does not modify Odoo's base behaviour |
 | DO per PO | Exactly 1 DO auto-created per confirmed PO — vendor cannot create additional DOs |
+| DO delivery date | Single date for the entire DO (not per product line) |
 | DO editing | Vendor edits delivery date + quantities (qty <= ordered qty from PO) |
 | DO locking trigger | Vendor digital signature only — no 23:00 cutoff |
 | DO signing | Digital signature on portal locks the DO, pushes delivery date + set quantities to Odoo Receipt |
 | DO printing | After signing, vendor can print DO PDF (includes signature) multiple times |
-| Receipt confirmation | Store confirms Receipt in Odoo — sets final qty_done. Portal receives webhook and shows Verified or Discrepancy |
-| Vendor PO confirmation | Vendor confirms Sent RFQ via portal -> portal calls `button_confirm` on `purchase.order` in Odoo |
-| Vendor RFQ rejection | Vendor rejects Sent RFQ via portal -> portal calls `button_cancel` on `purchase.order` in Odoo + email to store |
-| Post-signature locking | DO locked after vendor signs — portal admin can unlock directly in the portal (vendor notified by email) |
+| DO PDF language | Vietnamese only — all printed DO PDFs use Vietnamese labels |
+| DO PDF content | PO barcode (scannable by handheld), vendor info (ID, Tax ID, mobile, email), store ID, PO confirmation date, delivery date, product table with specific columns |
+| Receipt confirmation | Store confirms Receipt in Odoo — sets final qty_done. DO status becomes Done, showing final received amounts |
+| Returns | Supported via RPO (Return Purchase Order) + Goods Return Note — similar flow to PO/DO |
+| Vendor PO confirmation | Vendor confirms Sent RFQ via portal → portal calls `button_confirm` on `purchase.order` in Odoo (no email notification) |
+| Vendor RFQ rejection | Vendor rejects Sent RFQ via portal → portal calls `button_cancel` on `purchase.order` in Odoo + email to PO creator |
+| Post-signature locking | DO locked after vendor signs — portal admin (buyer) can unlock directly in the portal (vendor notified by email, no reason required) |
 | Data retention | 24 months — POs older than 24 months are permanently deleted from portal DB. Applies to all statuses |
-| Data export | Vendors can export receipt data for end-of-period invoicing and reconciliation |
+| Data export | Vendors can export data as PDF or CSV for end-of-period invoicing and reconciliation |
 | Backorder handling | Vendor submits qty only — store validates and decides in Odoo |
 | Admin role | Separate `admin_users` table, password set via env variable initially |
 | Admin capabilities | View all vendors, trigger sync, view all POs/DOs, unlock signed DOs, download any PDF |
 | Admin UI | Same layout as vendor portal with additional admin menu items |
-| PDF content | Odoo delivery slip + vendor-signed confirmation page |
 | Signature capture | `signature_pad.js` → PNG sent to backend |
 | PO list search | Filter by PO number and date range |
-| Vendor dashboard summary | Total POs, pending receipts, signed receipts shown above PO list |
-| Vendor comment on submission | Free-text note added per receipt when submitting qty_done |
-| PDF retention | No expiry — stored permanently on server |
+| Vendor dashboard summary | PO counts by status (Waiting, Confirmed, Cancelled) shown above PO list |
+| Vendor comment on DO | Free-text note added when vendor signs the DO |
+| PDF retention | 24 months — matching PO data retention |
 | Responsive design | Works on both desktop and mobile equally |
 | Vendor accounts | One account per Odoo partner — no multi-user per company |
 | Profile changes | All profile changes must go through Odoo — admin cannot edit in portal |
 | Admin language | Bilingual (Vietnamese + English) — same as vendor portal |
 | SSL / TLS | Handled at infrastructure level (load balancer / reverse proxy) |
-| Vendor PO confirmation | Vendor confirms Sent RFQ via portal → portal calls `button_confirm` on `purchase.order` in Odoo |
-| Audit logging | Key actions logged in DB: login, po_confirm, qty update, sign, unlock |
-| Email notifications | Invite, password reset, validation confirmation (vendor), validation alert (internal team) |
+| Audit logging | Key actions logged in DB: login, po_confirm, po_reject, do_update, do_sign, do_unlock, receipt_validated |
+| Email notifications | Invite, password reset, PO rejection (to PO creator), receipt confirmed (to vendor with discrepancy alert if any), DO unlocked (to vendor) |
+| Store email recipient | Email sent to the person who created the PO in Odoo (not a generic inbox) |
 | Email service | AWS SES |
 | Frontend stack | React + Vite |
 | Backend stack | FastAPI (Python) |
@@ -117,17 +121,18 @@ Nginx (reverse proxy + TLS termination)
 1. Vendor delivers goods to the store with the printed DO (2 paper copies, both parties sign, each keeps 1)
 2. Store reviews the Receipt in Odoo — can adjust the pre-filled set quantities before confirming
 3. Store confirms the Receipt in Odoo — `qty_done` is finalized
-4. Odoo sends a webhook to the portal notifying that the Receipt is validated
-5. Portal compares vendor's DO quantities against the store's confirmed `qty_done`:
-   - **All lines match exactly** → PO status on portal becomes **Verified**
-   - **Any line differs** → PO status on portal becomes **Discrepancy**
-6. Portal sends an email to the vendor with a comparison of delivered vs received quantities + PDF attachment
-7. Vendor can see both their DO quantities and the store's final received quantities on the portal
+4. Portal receives notification that the Receipt is validated (sync mechanism TBD — webhook vs polling, pending team confirmation)
+5. DO status on portal becomes **Done** — the final received amounts are shown on the DO
+6. Portal sends an email to the vendor confirming receipt, alerting if any quantities differ between DO and receipt
+7. Vendor can see both their DO quantities and the store's final received quantities on the DO detail page
+8. Vendor can export the data as PDF or CSV for invoicing and reconciliation
 
-### Nightly fallback sync
-- A scheduled job runs at 23:00 daily to catch any missed webhooks
-- Checks all Receipts in Odoo that have moved to `done` state but are not yet reflected on the portal
-- Updates portal statuses accordingly (Verified or Discrepancy)
+### Sync mechanism (Odoo → Portal)
+- **TBD — pending team confirmation.** Options under consideration:
+  - (a) Webhook: Odoo sends notification to portal on receipt validation (requires lightweight Odoo module)
+  - (b) Polling: portal periodically checks Odoo for state changes
+  - (c) Nightly batch sync at 23:00
+- Portal → Odoo communication (PO confirm/reject, DO push) is always real-time via XML-RPC
 
 ---
 
@@ -145,7 +150,7 @@ This section describes the portal's behaviour in plain business terms, intended 
 1. The portal sync job runs every 6 hours and detects the new vendor in Odoo
 2. A portal account is created, linked to the vendor's Odoo ID
 3. The vendor receives a **Welcome Email** (in Vietnamese by default) containing:
-   - Their **Vendor ID** — a permanent number they will use to log in
+   - Their **email login** — the email address they will use to log in
    - A **set-password link** valid for 24 hours
 4. The vendor clicks the link, sets their own password, and their account becomes active
 5. From this point, the vendor can log in at any time using their Vendor ID and password
@@ -166,8 +171,6 @@ This section describes the portal's behaviour in plain business terms, intended 
 - **Waiting** — RFQ has been sent to the vendor and is awaiting confirmation. Vendor can confirm or reject it.
 - **Confirmed** — PO has been approved, DO has been created. Vendor can edit and sign the DO.
 - **Cancelled** — PO has been cancelled (vendor rejected, or store cancelled). Read-only.
-- **Verified** — Store confirmed receipt, quantities match vendor's DO exactly. Read-only.
-- **Discrepancy** — Store confirmed receipt, quantities differ from vendor's DO. Read-only, informational for reconciliation.
 
 Draft RFQs are not shown. Vendors can view PO data for **24 months** from creation date. Older POs are permanently deleted.
 
@@ -182,7 +185,7 @@ Draft RFQs are not shown. Vendors can view PO data for **24 months** from creati
 - A "Reject" button is shown alongside the "Confirm PO" button on Waiting PO detail pages
 - Vendor clicks "Reject" → portal calls `button_cancel` on `purchase.order` via XML-RPC
 - Odoo updates the PO state from `sent` to `cancel`
-- Portal sends an email notification to the store informing them the RFQ was rejected
+- Portal sends an email notification to the PO creator (the store staff who made the RFQ) informing them the RFQ was rejected
 - The store must create a new RFQ if they wish to re-order — rejection is final
 
 **Searching and filtering:**
@@ -190,7 +193,7 @@ Draft RFQs are not shown. Vendors can view PO data for **24 months** from creati
 - Vendor can filter by date range (e.g. "POs from January to March")
 - Results are paginated — 20 POs per page
 
-**PO detail view:** clicking a PO shows the full list of ordered products with quantities and expected delivery dates, plus all linked delivery receipts.
+**PO detail view:** clicking a PO shows the full list of ordered products with quantities and expected delivery dates, plus the linked DO with its status (Draft / Signed / Done / Cancelled).
 
 ---
 
@@ -230,15 +233,14 @@ Store reviews Receipt in Odoo (can adjust quantities)
          ▼
 Store confirms Receipt in Odoo — qty_done finalized
          │
-         ├──▶ Webhook notifies portal
-         │         │
-         │         ▼
-         │    Portal compares vendor DO qty vs store qty_done
-         │         │
-         │         ├── Match → PO status: Verified
-         │         └── Mismatch → PO status: Discrepancy
+         ▼
+Portal notified (sync mechanism TBD)
+DO status → Done, final received amounts shown
          │
-         └──▶ Email to vendor: delivered vs received comparison + PDF
+         ├──▶ Email to vendor: receipt confirmed
+         │    (alerts if any quantities differ)
+         │
+         └──▶ Vendor can export PDF/CSV for invoicing
 ```
 
 **Key points for stakeholders:**
@@ -246,31 +248,29 @@ Store confirms Receipt in Odoo — qty_done finalized
 - The DO pushes **set quantities** (pre-filled) to the Odoo Receipt, but these are not `qty_done` until the store confirms
 - All stock validation decisions remain with the store in Odoo — the store can adjust quantities before confirming
 - The signed DO PDF is the vendor's formal delivery document — they print it and bring it to the store
-- The portal shows both the vendor's DO quantities and the store's final received quantities for full transparency
-- Discrepancy status is informational — for end-of-period reconciliation between vendor and store
+- When store confirms receipt, DO becomes Done and shows final received amounts alongside vendor's delivery amounts
+- If quantities differ, the vendor is alerted in the notification email — they can log in to view details and export data
 
 ---
 
-### 4. DO States and PO Status Lifecycle
+### 4. PO and DO Status Lifecycle
 
-**DO States (portal-managed):**
-
-| DO State | What the vendor can do |
-|---|---|
-| **Draft** | Edit delivery date + quantities, save multiple times |
-| **Signed / Locked** | Read-only, print DO PDF (multiple times) |
-
-**PO Status Lifecycle (portal-managed, derived from Odoo + DO state):**
+**PO Statuses (portal-managed):**
 
 | Portal PO Status | Odoo PO State | Trigger | Vendor can do |
 |---|---|---|---|
 | **Waiting** | `sent` | Store sends RFQ | Confirm or Reject |
-| **Confirmed** | `purchase` | Vendor confirms PO | Edit & sign DO |
+| **Confirmed** | `purchase` | Vendor confirms PO | View DO, export data |
 | **Cancelled** | `cancel` | Vendor rejects or store cancels | Read-only |
-| **Verified** | `purchase` (receipt `done`, qty match) | Store confirms receipt, all quantities match DO | Read-only, export data |
-| **Discrepancy** | `purchase` (receipt `done`, qty mismatch) | Store confirms receipt, any quantity differs from DO | Read-only, export data |
 
-**Note:** Verified and Discrepancy correspond to Odoo's `purchase` state — the portal derives these by comparing the vendor's signed DO quantities against the store's confirmed `qty_done` values. Odoo's base behaviour is never modified.
+**DO Statuses (portal-managed):**
+
+| DO Status | Trigger | Vendor can do |
+|---|---|---|
+| **Draft** | PO confirmed, DO auto-created | Edit delivery date + quantities, save multiple times |
+| **Signed** | Vendor signs DO digitally | Read-only, print DO PDF (multiple times). Data pushed to Odoo Receipt |
+| **Done** | Store confirms Receipt in Odoo | Read-only, view final received amounts alongside delivery amounts, export PDF/CSV |
+| **Cancelled** | PO cancelled (before receipt confirmation) | Read-only |
 
 **Cancellation rules:**
 - A PO can only be cancelled if the linked Receipt has **not** been confirmed by the store (no `qty_done`)
@@ -301,12 +301,13 @@ If quantities were entered incorrectly and the vendor needs to resubmit, a porta
 
 | Event | Recipient | Language | Content |
 |---|---|---|---|
-| New vendor account created | Vendor | Vietnamese (default) | Vendor ID + set-password link |
+| New vendor account created | Vendor | Vietnamese (default) | Vendor's email login + set-password link |
 | Password reset requested | Vendor | Vendor's preferred language | Reset link (24h expiry) |
-| Vendor confirms PO | Store | Vietnamese | PO confirmed notification |
-| Vendor rejects RFQ | Store | Vietnamese | RFQ rejected by vendor, cancelled in Odoo |
-| Store confirms receipt | Vendor | Vendor's preferred language | Comparison: delivered vs received quantities + PDF attachment |
+| Vendor rejects RFQ | PO creator (store staff) | Vietnamese | PO rejected + cancelled in Odoo |
+| Store confirms receipt | Vendor | Vendor's preferred language | Receipt confirmed notification. Alerts if any quantities differ between DO and receipt |
 | DO unlocked by admin | Vendor | Vendor's preferred language | Notification that DO has been unlocked for re-editing |
+
+**Note:** No email is sent when a vendor confirms a PO (the confirmation is pushed to Odoo in real-time) or when a vendor signs a DO (the data is pushed to Odoo automatically). The store email recipient is always the specific person who created the PO in Odoo, not a generic team inbox.
 
 ---
 
@@ -322,6 +323,48 @@ It is equally important for stakeholders to understand the boundaries of the por
 - **Does not expose any Odoo credentials to vendors** — vendors have no access to Odoo, directly or indirectly
 - **Does not allow vendors to see other vendors' data** — enforced at every layer of the system
 - **Does not give stores access to the portal** — stores only interact through Odoo
+
+---
+
+### 8. Returns: RPO & Goods Return Note
+
+The portal supports a returns workflow mirroring the purchase flow. When a store needs to return goods to a vendor, the process is handled through a **Return Purchase Order (RPO)** and a **Goods Return Note (GRN)**.
+
+**How returns work:**
+1. Store creates a Return Purchase Order (RPO) in Odoo — this is the return equivalent of a PO
+2. The RPO appears on the vendor portal with a linked Goods Return Note (GRN) — the return equivalent of a DO
+3. Vendor views the GRN on the portal, which lists the products and quantities being returned
+4. The return delivery and receipt follow a similar workflow to the regular DO/Receipt flow
+
+**RPO Statuses (portal):** Waiting, Confirmed, Cancelled — same as PO statuses
+
+**GRN Statuses (portal):** Draft, Signed, Done, Cancelled — same as DO statuses
+
+**Visibility:** Returns are shown alongside regular POs in the vendor's portal, clearly labelled as returns. Vendors can filter to view only returns or only regular POs.
+
+**Export:** Return data is included in the vendor's PDF/CSV export for reconciliation.
+
+> **Note:** The detailed RPO/GRN workflow, API endpoints, and database tables will be specified after the core PO/DO flow is finalized. The returns flow intentionally mirrors the PO/DO flow to keep the system consistent and simple.
+
+---
+
+### 9. Data Export
+
+Vendors can export delivery and receipt data for end-of-period invoicing and reconciliation.
+
+**Export formats:**
+- **PDF** — formatted report suitable for printing and archival
+- **CSV** — machine-readable format for import into accounting systems
+
+**Export scope (all included):**
+- PO number
+- DO quantities (what vendor delivered)
+- Receipt quantities (what store confirmed)
+- Delivery date
+- Receipt confirmation date
+- Date range filter available (e.g., "export all data from March 2026")
+
+**Export includes both regular POs/DOs and returns (RPO/GRN).**
 
 ---
 
@@ -378,7 +421,7 @@ vendor-portal/
 - `DB_PASSWORD`, `REDIS_URL`
 - `FRONTEND_URL` (for CORS and email links)
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SES_REGION`, `SES_SENDER_EMAIL`
-- `INTERNAL_NOTIFICATION_EMAIL` (team inbox for validation alerts)
+- ~~`INTERNAL_NOTIFICATION_EMAIL`~~ — removed: store notifications go to the PO creator's email from Odoo, not a generic inbox
 - `ADMIN_INITIAL_PASSWORD` (used to seed the first admin account on first startup)
 
 ---
@@ -489,10 +532,14 @@ vendor-portal/
 |---|---|---|
 | `id` | serial PK | |
 | `do_id` | FK → delivery_orders | parent DO |
+| `line_number` | integer | sequential row number |
 | `product_id` | integer | Odoo `product.product.id` |
+| `product_barcode` | varchar | cached product barcode from Odoo |
 | `product_name` | varchar | cached product name |
+| `base_uom` | varchar | base unit of measure (from Odoo product) |
+| `delivered_uom` | varchar | delivery unit of measure (from Odoo PO line) |
 | `ordered_qty` | decimal | quantity from PO line (read-only reference) |
-| `delivery_qty` | decimal | vendor-entered delivery quantity (must be <= ordered_qty) |
+| `delivery_qty` | decimal | vendor-entered delivery quantity (must be <= ordered_qty, in base UoM) |
 | `received_qty` | decimal | NULL until store confirms receipt; final qty_done from Odoo |
 
 **`do_locks`**
@@ -560,12 +607,13 @@ The JWT access token carries a `role` field (`vendor` or `admin`). All admin-onl
 | GET | `/api/purchase-orders` | Paginated PO list with portal statuses, filterable by PO number and date range |
 | GET | `/api/purchase-orders/{id}` | PO detail with order lines + linked DO + receipt comparison |
 | POST | `/api/purchase-orders/{id}/confirm` | Confirm a Sent RFQ — calls `button_confirm` on Odoo; returns 409 if PO is not in `sent` state |
-| POST | `/api/purchase-orders/{id}/reject` | Reject a Sent RFQ — calls `button_cancel` on Odoo + email to store; returns 409 if PO is not in `sent` state |
-| GET | `/api/delivery-orders/{do_id}` | DO detail with product lines, delivery date, and current quantities |
+| POST | `/api/purchase-orders/{id}/reject` | Reject a Sent RFQ — calls `button_cancel` on Odoo + email to PO creator; returns 409 if PO is not in `sent` state |
+| GET | `/api/delivery-orders/{do_id}` | DO detail with product lines, delivery date, delivery qty, and received qty (when Done) |
 | PATCH | `/api/delivery-orders/{do_id}/lines` | Update quantities + delivery date on the DO (blocked if signed/locked); qty must be <= ordered qty |
 | POST | `/api/delivery-orders/{do_id}/sign` | Submit signature PNG + optional comment, lock DO, push to Odoo Receipt, generate PDF |
 | GET | `/api/delivery-orders/{do_id}/pdf` | Download signed DO PDF (available post-signature, can be called multiple times for printing) |
-| POST | `/api/webhooks/odoo/receipt-validated` | Webhook receiver: Odoo notifies portal when Receipt is validated — triggers status update + vendor email |
+| GET | `/api/export` | Export delivery/receipt data as PDF or CSV. Query params: `format` (pdf/csv), `date_from`, `date_to`. Includes POs, DOs, receipts, and returns |
+| POST | `/api/webhooks/odoo/receipt-validated` | Webhook receiver: Odoo notifies portal when Receipt is validated — triggers DO status → Done + vendor email |
 
 ### Admin-only endpoints
 | Method | Endpoint | Description |
@@ -605,15 +653,13 @@ Since the store decides on backorders in Odoo, the portal does **not** call `but
 
 The Odoo picking remains in `assigned` state after the vendor signs — the store sees the set quantities and validates in Odoo at their discretion. Only when the store confirms the Receipt does `qty_done` get finalized.
 
-### Webhook: Receipt validated
-When the store confirms a Receipt in Odoo, a webhook notifies the portal:
-1. Portal receives `POST /api/webhooks/odoo/receipt-validated` with `picking_id`
+### Receipt validated (Odoo → Portal)
+When the store confirms a Receipt in Odoo, the portal is notified (sync mechanism TBD — pending team confirmation):
+1. Portal receives notification with `picking_id`
 2. Portal reads the confirmed `qty_done` values from Odoo via XML-RPC
-3. Portal compares vendor's DO quantities against store's `qty_done`:
-   - All lines match → PO portal status = **Verified**
-   - Any line differs → PO portal status = **Discrepancy**
-4. Portal sends email to vendor with delivered vs received comparison + PDF attachment
-5. Nightly sync at 23:00 catches any missed webhooks as a fallback
+3. DO status on portal changes to **Done** — final received amounts are stored on DO lines
+4. Portal sends email to vendor confirming receipt. If any quantities differ between DO and receipt, the email includes a discrepancy alert
+5. Vendor can log into portal to view details and export PDF/CSV
 
 ### Audit logging approach
 Every key action is written to the `audit_log` table synchronously within the same request. The logged action types are:
@@ -625,8 +671,8 @@ Every key action is written to the `audit_log` table synchronously within the sa
 | `po_reject` | `POST /purchase-orders/:id/reject` | PO ID, PO name, previous state (`sent`), new state (`cancel`) |
 | `do_update` | `PATCH /delivery-orders/:id/lines` | DO ID, list of lines with old and new quantities |
 | `do_sign` | `POST /delivery-orders/:id/sign` | DO ID, vendor comment (if any), PDF path, signature path |
-| `do_unlock` | `POST /admin/delivery-orders/:id/unlock` | DO ID, admin who unlocked, reason if provided |
-| `receipt_validated` | Webhook from Odoo | picking ID, final status (Verified/Discrepancy) |
+| `do_unlock` | `POST /admin/delivery-orders/:id/unlock` | DO ID, admin who unlocked |
+| `receipt_validated` | Odoo → Portal notification | picking ID, DO status → Done, any quantity differences noted |
 
 The audit log is viewable by admins via `GET /api/admin/audit-log`, filterable by actor, action type, and date range, paginated at 50 rows per page. It is never editable or deletable through the portal.
 
@@ -634,20 +680,54 @@ The audit log is viewable by admins via `GET /api/admin/audit-log`, filterable b
 
 | Trigger | Recipient | Content |
 |---|---|---|
-| New vendor synced | Vendor | Welcome email with Vendor ID + set-password link |
+| New vendor synced | Vendor | Welcome email with vendor's email login + set-password link |
 | Forgot password requested | Vendor | Reset link (24h expiry) |
-| Vendor confirms PO | Store (`INTERNAL_NOTIFICATION_EMAIL`) | PO confirmed — vendor name, PO number |
-| Vendor rejects RFQ | Store (`INTERNAL_NOTIFICATION_EMAIL`) | RFQ rejected by vendor — vendor name, PO number, cancelled in Odoo |
-| Store confirms receipt | Vendor | Comparison: vendor DO qty vs store received qty + PDF attachment |
+| Vendor rejects RFQ | PO creator (store staff who made the RFQ) | PO rejected + cancelled in Odoo |
+| Store confirms receipt | Vendor | Receipt confirmed notification. Alerts if any quantities differ between DO and receipt |
 | DO unlocked by admin | Vendor | Notification that DO has been unlocked for re-editing |
 
-All emails are sent in the vendor's `preferred_language` for vendor-facing emails, and in Vietnamese for store emails.
+**Not emailed:** Vendor confirms PO (no email, data pushed to Odoo in real-time), Vendor signs DO (no email, data pushed to Odoo automatically).
+
+All emails are sent in the vendor's `preferred_language` for vendor-facing emails, and in Vietnamese for store-facing emails. Store email is sent to the PO creator's email (from Odoo), not a generic inbox.
 
 ### DO PDF pipeline approach
 1. Check `do_locks` — PDF only generated after signature is submitted
-2. Generate the DO document as HTML rendered to PDF with WeasyPrint, including: vendor company name, store name, product list with ordered qty and delivery qty, delivery date, vendor's digital signature PNG, timestamp, and vendor comment (if provided), plus a blank space for store's physical signature
+2. Generate the DO document as HTML rendered to PDF with WeasyPrint, **in Vietnamese**
 3. Store the PDF on the server filesystem (retained for 24 months, matching PO retention)
 4. Return the PDF as a binary response with `Content-Disposition: attachment` — vendor can call this endpoint multiple times to print
+
+### DO PDF content specification
+The printed DO PDF includes the following sections, all in Vietnamese:
+
+**Header:**
+- PO number displayed as a **barcode** (scannable by store's handheld device)
+- Vendor ID (Mã NCC)
+- Vendor Tax ID (Mã số thuế)
+- Vendor mobile phone (Số điện thoại)
+- Vendor contact email (Email liên hệ)
+- Store ID (Mã cửa hàng)
+- PO Confirmation Date (Ngày xác nhận đơn hàng)
+- Delivery Date (Ngày giao hàng)
+
+**Product table columns:**
+
+| # | Column (Vietnamese) | Column (English) | Description |
+|---|---|---|---|
+| 1 | Số thứ tự | Line number | Sequential row number |
+| 2 | Mã vạch | Barcode | Product barcode |
+| 3 | Tên sản phẩm | Product name | Product description |
+| 4 | Đơn vị cơ sở | Base UoM | Base unit of measure |
+| 5 | Đơn vị giao hàng | Delivered UoM | Delivery unit of measure |
+| 6 | Số lượng giao (theo đơn vị cơ sở) | Delivery qty (base UoM) | Quantity vendor plans to deliver |
+| 7 | Số lượng thực nhận (theo đơn vị cơ sở) | Received qty (base UoM) | Left blank — filled by store on paper |
+| 8 | SL chênh lệch | Discrepancy qty | Left blank — for store to note differences |
+| 9 | Ghi chú | Notes | Left blank — for store notes |
+
+**Footer:**
+- Vendor's digital signature (PNG embedded)
+- Vendor comment (if provided at signing)
+- Timestamp of signature
+- Blank signature space for store's physical signature
 
 ---
 
@@ -720,27 +800,29 @@ Admin users see the same top navigation bar as vendors, with additional items: *
 ### Vendor dashboard summary
 Above the PO list, the vendor dashboard shows summary cards:
 - **Waiting** — POs awaiting vendor confirmation
-- **Confirmed** — POs with DOs pending signature
-- **Verified** — POs where store receipt matched DO
-- **Discrepancy** — POs where store receipt differed from DO
+- **Confirmed** — POs confirmed, DOs in various states
+- **Cancelled** — POs that have been cancelled
 
 ### PO list search & filter UI
 - Search bar for PO number (partial match, debounced 300ms before API call)
 - Date range pickers for `date_from` and `date_to`
-- Status badge on each PO row (Waiting / Confirmed / Cancelled / Verified / Discrepancy) with colour coding
+- Status badge on each PO row (Waiting / Confirmed / Cancelled) with colour coding
+- DO status shown alongside PO status (Draft / Signed / Done / Cancelled)
 - Pagination controls (previous / next), page size fixed at 20
 
 ### DO detail — visible fields per product line
-| Field | Source |
-|---|---|
-| Product code / SKU | `delivery_order_lines` → `product_id` (from Odoo) |
-| Product description | `delivery_order_lines` → `product_name` |
-| Unit of measure | from Odoo `purchase.order.line` → `product_uom.name` |
-| Ordered quantity (read-only) | `delivery_order_lines` → `ordered_qty` (from PO line) |
-| Delivery quantity (editable) | `delivery_order_lines` → `delivery_qty` (must be <= ordered_qty) |
-| Received quantity (read-only) | `delivery_order_lines` → `received_qty` (NULL until store confirms; shows store's final qty_done) |
-| Unit price | from Odoo `purchase.order.line` → `price_unit` |
-| Subtotal | Calculated: unit price x delivery qty (frontend only, not stored) |
+| Field | Vietnamese | Source |
+|---|---|---|
+| Line number | Số thứ tự | Sequential row number |
+| Product barcode | Mã vạch | from Odoo `product.product` → `barcode` |
+| Product name | Tên sản phẩm | `delivery_order_lines` → `product_name` |
+| Base UoM | Đơn vị cơ sở | from Odoo `product.product` → `uom_id.name` |
+| Delivered UoM | Đơn vị giao hàng | from Odoo `purchase.order.line` → `product_uom.name` |
+| Ordered quantity (read-only) | SL đặt hàng | `delivery_order_lines` → `ordered_qty` (from PO line) |
+| Delivery quantity (editable) | Số lượng giao | `delivery_order_lines` → `delivery_qty` (must be <= ordered_qty, in base UoM) |
+| Received quantity (read-only) | Số lượng thực nhận | `delivery_order_lines` → `received_qty` (NULL until store confirms; shows store's final qty_done) |
+| Unit price | Đơn giá | from Odoo `purchase.order.line` → `price_unit` |
+| Subtotal | Thành tiền | Calculated: unit price x delivery qty (frontend only, not stored) |
 
 ### DO detail behaviour
 - Delivery date picker at the top of the DO form
@@ -752,12 +834,11 @@ Above the PO list, the vendor dashboard shows summary cards:
 - Once signed, the page shows a read-only summary with a "Print DO" button
 - After store confirms receipt, the `received_qty` column is populated — vendor sees both their delivery qty and the store's received qty side by side
 
-### PO detail — receipt comparison view
-After the store confirms the receipt, the PO detail page shows:
+### PO detail — DO and receipt view
+The PO detail page shows the linked DO with its status. When the DO is Done (store confirmed receipt):
 - **Vendor DO quantities** — what the vendor planned to deliver
 - **Store received quantities** — what the store actually confirmed in Odoo
-- **Status** — Verified (all match) or Discrepancy (any differ)
-- Per-line comparison highlighting any differences
+- Per-line comparison, highlighting any differences between delivery and received quantities
 
 ### PDF history page
 - Lists all DOs the vendor has signed, in reverse chronological order
@@ -835,7 +916,7 @@ All containers: `restart: unless-stopped`. Health check on backend container (`G
 - [ ] Odoo service account API key generated and connectivity tested from portal VM
 - [ ] Firewall: portal VM → Odoo VM port 8069 open
 - [ ] AWS SES sender domain verified, IAM credentials configured
-- [ ] `INTERNAL_NOTIFICATION_EMAIL` set to correct team inbox
+- [ ] Verify PO creator email field is accessible via Odoo XML-RPC (`purchase.order` → `user_id` → `email`)
 - [ ] `ADMIN_INITIAL_PASSWORD` set and first admin account seeded
 - [ ] All production secrets set in Docker secrets files
 - [ ] Upstream load balancer / proxy configured to forward HTTPS traffic
