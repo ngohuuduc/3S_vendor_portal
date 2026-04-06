@@ -1,28 +1,28 @@
-# Vendor Portal — Implementation Roadmap
+# Vendor Portal — Lộ Trình Triển Khai
 
-> Technical phases, DB schema, API endpoints, and developer gotchas.
-> For business logic and process flow see [README.md](README.md) and [PROCESS_FLOW.md](PROCESS_FLOW.md).
+> Các phase kỹ thuật, DB schema, API endpoints, và các lưu ý cho developer.
+> Xem business logic và quy trình tại [README.md](README.md) và [PROCESS_FLOW.md](PROCESS_FLOW.md).
 
 ---
 
-## Technical Stack Decisions
+## Quyết Định Stack Kỹ Thuật
 
-| Concern | Decision |
+| Vấn đề | Quyết định |
 |---|---|
 | Frontend stack | React + Vite |
 | Backend stack | FastAPI (Python) |
-| Database | PostgreSQL (portal-owned) |
+| Cơ sở dữ liệu | PostgreSQL (thuộc portal) |
 | Cache / rate limiting | Redis |
-| Deployment | Docker Compose on a separate VM, Nginx reverse proxy |
-| SSL / TLS | Handled at infrastructure level (load balancer / reverse proxy) |
-| HTTP client (frontend) | Native `fetch` API — no axios or third-party HTTP lib |
-| Signature capture | `signature_pad.js` → PNG sent to backend |
-| Audit logging (DB) | Actions logged: `login`, `po_confirm`, `po_reject`, `po_auto_cancel`, `do_update`, `do_sign`, `do_unlock`, `rn_confirm_sign`, `receipt_validated` |
-| Admin role | Separate `admin_users` table, password seeded from `ADMIN_INITIAL_PASSWORD` env variable on first startup |
+| Triển khai | Docker Compose trên VM riêng biệt, Nginx reverse proxy |
+| SSL / TLS | Xử lý ở tầng infrastructure (load balancer / reverse proxy) |
+| HTTP client (frontend) | Native `fetch` API — không dùng axios hay thư viện HTTP bên ngoài |
+| Capture chữ ký | `signature_pad.js` → PNG gửi lên backend |
+| Audit logging (DB) | Các hành động được ghi: `login`, `po_confirm`, `po_reject`, `po_auto_cancel`, `do_update`, `do_sign`, `do_unlock`, `rn_confirm_sign`, `receipt_validated` |
+| Vai trò Admin | Bảng `admin_users` riêng biệt, mật khẩu được seed từ biến môi trường `ADMIN_INITIAL_PASSWORD` khi khởi động lần đầu |
 
 ---
 
-## Odoo ↔ Portal Sync — Confirmed Decisions
+## Odoo ↔ Portal Sync — Các Quyết Định Đã Xác Nhận
 
 > Tập hợp các điểm kỹ thuật đã được xác nhận với IT team.
 
@@ -35,74 +35,74 @@
 | 5 | **PO rejection → Odoo** | Portal gọi `button_cancel` trên `purchase.order` | ✅ `button_cancel` hoạt động ở state `sent` trên Odoo 16 CE |
 | 6 | **DO data** | Odoo tự tạo DO (`stock.picking`) khi PO confirmed | ✅ Odoo tạo — portal đọc qua XML-RPC, không tự tạo |
 | 7 | **DO sign → Odoo** | Sau khi vendor ký, delivery date + set quantities push về Odoo Receipt | ✅ `scheduled_date` trên `stock.picking` + `quantity_done` trên `stock.move.line` |
-| 8 | **Receipt validation (Odoo → Portal)** | Store confirms Receipt → Portal cập nhật DO status = Done | ✅ Nightly batch sync (23:00) — không cần Odoo module |
+| 8 | **Receipt validation (Odoo → Portal)** | Cửa hàng xác nhận Receipt → Portal cập nhật DO status = Done | ✅ Nightly batch sync (23:00) — không cần Odoo module |
 | 9 | **Vendor deactivation** | Vendor deactivated trên Odoo → sync set `is_active = FALSE` | ✅ Chờ sync cycle 6h — không critical |
 
 **Cơ chế sync (draft):**
-- **Portal → Odoo:** XML-RPC write — PO confirm/reject, DO push (delivery date + quantities)
-- **Odoo → Portal (profiles):** Scheduled batch job mỗi 6h
-- **Odoo → Portal (PO data):** XML-RPC on-demand, cached, refresh mỗi 10 phút
+- **Portal → Odoo:** XML-RPC write — xác nhận/từ chối PO, đẩy DO (ngày giao hàng + số lượng)
+- **Odoo → Portal (hồ sơ):** Scheduled batch job mỗi 6h
+- **Odoo → Portal (dữ liệu PO):** XML-RPC on-demand, có cache, refresh mỗi 10 phút
 - **Odoo → Portal (receipt validated):** Nightly batch sync lúc 23:00 — không cần Odoo module
-- **PDF fetch:** HTTP session riêng, không dùng XML-RPC
+- **Tải PDF:** HTTP session riêng, không dùng XML-RPC
 
 ---
 
-## Data Flow Summary
+## Tóm Tắt Luồng Dữ Liệu
 
-### Authentication flow
-1. Vendor enters their **Vendor ID** (integer — `res.partner.id` from Odoo) and password on the login page
-2. Backend looks up `vendor_users` by `odoo_partner_id`
-3. Password verified with bcrypt — same error message for all failure cases
-4. On success, issues a JWT access token (30 min) and refresh token (7 days)
-5. All subsequent requests carry the access token in the `Authorization` header
-6. Expired access tokens are silently refreshed using the refresh token
-7. On refresh failure, vendor is redirected to the login page
+### Luồng xác thực
+1. Nhà cung cấp nhập **Vendor ID** (số nguyên — `res.partner.id` từ Odoo) và mật khẩu trên trang đăng nhập
+2. Backend tra cứu `vendor_users` theo `odoo_partner_id`
+3. Mật khẩu được xác minh bằng bcrypt — cùng một thông báo lỗi cho mọi trường hợp thất bại
+4. Thành công, cấp phát JWT access token (30 phút) và refresh token (7 ngày)
+5. Tất cả request tiếp theo mang access token trong header `Authorization`
+6. Access token hết hạn được tự động làm mới bằng refresh token
+7. Khi refresh thất bại, nhà cung cấp được chuyển hướng về trang đăng nhập
 
-### Profile sync flow
-1. Scheduled job runs every 6 hours, reads `res.partner` where `is_vendor = True` and `email` is set
-2. **New partner:** creates `vendor_users` row (no password, inactive) linked by `odoo_partner_id`. Generates 24h invite token, sends welcome email via AWS SES containing the **Vendor ID** and set-password link
-3. **Existing partner:** syncs profile fields only (`full_name`, `company_name`, `phone`, `tax_id`) — `hashed_password` is **never overwritten** by sync
-4. **Partner deactivated in Odoo:** sets `is_active = FALSE` — vendor can no longer log in
-5. Partners with no email in Odoo are skipped and logged for manual follow-up (email is needed to deliver the welcome email)
+### Luồng đồng bộ hồ sơ
+1. Scheduled job chạy mỗi 6 giờ, đọc `res.partner` nơi `is_vendor = True` và có `email`
+2. **Partner mới:** tạo dòng `vendor_users` (không có mật khẩu, chưa kích hoạt) liên kết qua `odoo_partner_id`. Tạo invite token 24h, gửi email chào mừng qua AWS SES chứa **Vendor ID** và link đặt mật khẩu
+3. **Partner đã tồn tại:** chỉ đồng bộ các trường hồ sơ (`full_name`, `company_name`, `phone`, `tax_id`) — `hashed_password` **không bao giờ bị ghi đè** bởi sync
+4. **Partner bị vô hiệu hoá trong Odoo:** đặt `is_active = FALSE` — nhà cung cấp không thể đăng nhập nữa
+5. Partner không có email trong Odoo bị bỏ qua và ghi log để xử lý thủ công (cần email để gửi email chào mừng)
 
-### Delivery Order (DO) flow
-1. When a vendor confirms a PO, Odoo auto-creates 1 DO (stock.picking). The portal reads it via XML-RPC and makes it available for editing
-2. Vendor edits the DO: sets delivery date and quantities per product line (qty must be <= ordered qty from PO)
-3. Saves are incremental — vendor can save and come back multiple times while the DO is in Draft state
-4. When ready, vendor clicks "Sign DO", draws their digital signature, and confirms
-5. Backend verifies ownership, stores the signature PNG, generates the signed DO PDF (WeasyPrint), and marks the DO as **locked** in the portal database
-6. Backend pushes via XML-RPC: `scheduled_date` → `stock.picking`, `quantity_done` → `stock.move.line`
-7. Vendor can print the signed DO PDF multiple times — this is the document they bring to the store
-8. The DO is now read-only in the portal — only a portal admin can unlock it (vendor is notified by email on unlock)
+### Luồng Delivery Order (DO)
+1. Khi nhà cung cấp xác nhận PO, Odoo tự động tạo 1 DO (stock.picking). Portal đọc qua XML-RPC và cho phép chỉnh sửa
+2. Nhà cung cấp chỉnh sửa DO: đặt ngày giao hàng và số lượng từng dòng sản phẩm (qty phải <= qty đặt hàng từ PO)
+3. Lưu được thực hiện theo từng bước — nhà cung cấp có thể lưu và quay lại nhiều lần khi DO ở trạng thái Draft
+4. Khi sẵn sàng, nhà cung cấp nhấp "Ký DO", vẽ chữ ký điện tử và xác nhận
+5. Backend xác minh quyền sở hữu, lưu PNG chữ ký, tạo DO PDF đã ký (WeasyPrint), và đánh dấu DO là **khoá** trong cơ sở dữ liệu portal
+6. Backend đẩy qua XML-RPC: `scheduled_date` → `stock.picking`, `quantity_done` → `stock.move.line`
+7. Nhà cung cấp có thể in DO PDF đã ký nhiều lần — đây là chứng từ họ mang đến cửa hàng
+8. DO hiện chỉ đọc trên portal — chỉ portal admin mới có thể mở khoá (nhà cung cấp được thông báo qua email khi mở khoá)
 
-### Receipt confirmation flow (store-side, reflected on portal)
-1. Vendor delivers goods to the store with the printed DO (2 paper copies, both parties sign, each keeps 1)
-2. Store reviews the Receipt in Odoo — can adjust the pre-filled set quantities before confirming
-3. Store confirms the Receipt in Odoo — `qty_done` is finalized
-4. Portal receives notification that the Receipt is validated (sync mechanism TBD — webhook vs polling, pending team confirmation)
-5. DO status on portal becomes **Done** — the final received amounts are shown on the DO
-6. Portal sends an email to the vendor confirming receipt, alerting if any quantities differ between DO and receipt
-7. Vendor can see both their DO quantities and the store's final received quantities on the DO detail page
-8. Vendor can export the data as PDF or CSV for invoicing and reconciliation
+### Luồng xác nhận biên nhận (phía cửa hàng, phản ánh trên portal)
+1. Nhà cung cấp giao hàng đến cửa hàng với DO in ra (2 bản giấy, cả hai bên ký, mỗi bên giữ 1 bản)
+2. Cửa hàng xem xét Receipt trong Odoo — có thể điều chỉnh số lượng đã điền trước khi xác nhận
+3. Cửa hàng xác nhận Receipt trong Odoo — `qty_done` được finalize
+4. Portal nhận thông báo rằng Receipt đã được validated (cơ chế sync TBD — webhook vs polling, chờ xác nhận từ team)
+5. Trạng thái DO trên portal chuyển thành **Done** — số lượng thực tế nhận được được hiển thị trên DO
+6. Portal gửi email đến nhà cung cấp xác nhận biên nhận, cảnh báo nếu có số lượng chênh lệch giữa DO và biên nhận
+7. Nhà cung cấp có thể thấy cả số lượng DO của mình và số lượng thực tế cửa hàng xác nhận trên trang chi tiết DO
+8. Nhà cung cấp có thể xuất dữ liệu dưới dạng PDF hoặc CSV để lập hoá đơn và đối soát
 
-### Sync mechanism (Odoo → Portal)
+### Cơ chế sync (Odoo → Portal)
 - **Nightly batch sync lúc 23:00** — portal đọc tất cả Receipt đã được confirm trong ngày qua XML-RPC
 - Không cần Odoo module, chỉ cần quyền XML-RPC read trên `stock.picking`
-- Portal → Odoo communication (PO confirm/reject, DO push) là real-time via XML-RPC
+- Portal → Odoo communication (xác nhận/từ chối PO, đẩy DO) là real-time via XML-RPC
 
 ---
 
-## Phase 0 — Project Setup & Infrastructure
-**Effort: 0.5–1 day**
+## Phase 0 — Thiết Lập Dự Án & Hạ Tầng
+**Ước tính: 0.5–1 ngày**
 
-### Objectives
-- Establish monorepo structure with `/frontend`, `/backend`, `/infra` folders
-- Configure Docker Compose with all five services: frontend, backend, PostgreSQL, Redis, Nginx
-- Set up environment variable strategy and secrets management
-- Establish network connectivity between the portal VM and the Odoo VM
-- Configure AWS SES: verify sender domain, create IAM user with SES send permissions, store credentials as secrets
+### Mục tiêu
+- Thiết lập cấu trúc monorepo với các thư mục `/frontend`, `/backend`, `/infra`
+- Cấu hình Docker Compose với năm service: frontend, backend, PostgreSQL, Redis, Nginx
+- Thiết lập chiến lược biến môi trường và quản lý secrets
+- Thiết lập kết nối mạng giữa portal VM và Odoo VM
+- Cấu hình AWS SES: xác minh sender domain, tạo IAM user với quyền gửi SES, lưu credentials dưới dạng secrets
 
-### Repo structure
+### Cấu trúc repo
 ```
 vendor-portal/
 ├── frontend/               # React + Vite
@@ -111,7 +111,7 @@ vendor-portal/
 │   │   ├── components/
 │   │   ├── hooks/
 │   │   ├── api/            # fetch wrapper + TanStack Query hooks
-│   │   └── i18n/           # Vietnamese + English translation files
+│   │   └── i18n/           # File dịch Tiếng Việt + Tiếng Anh
 │   └── Dockerfile
 ├── backend/                # FastAPI
 │   ├── app/
@@ -133,594 +133,587 @@ vendor-portal/
 └── README.md
 ```
 
-### Key decisions
-- **Monorepo** keeps frontend and backend versioned together, simplifying deployment
-- **Docker Compose** with separate dev and prod configs — prod uses Docker secrets for sensitive values
-- **AWS SES setup:** verify the sending domain in SES, create a dedicated IAM user with `ses:SendEmail` permission only, store `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` as Docker secrets. Use `boto3` in the FastAPI email service.
-- **Odoo connectivity:** portal VM IP must be whitelisted on Odoo VM firewall for port 8069. A dedicated Odoo service account with an API key is the only credential the portal uses.
+### Các quyết định chính
+- **Monorepo** giữ frontend và backend versioning cùng nhau, đơn giản hoá triển khai
+- **Docker Compose** với config dev và prod riêng biệt — prod dùng Docker secrets cho các giá trị nhạy cảm
+- **Thiết lập AWS SES:** xác minh sending domain trong SES, tạo IAM user chuyên dụng chỉ có quyền `ses:SendEmail`, lưu `AWS_ACCESS_KEY_ID` và `AWS_SECRET_ACCESS_KEY` dưới dạng Docker secrets. Dùng `boto3` trong email service của FastAPI.
+- **Kết nối Odoo:** IP của portal VM phải được whitelist trên firewall của Odoo VM ở cổng 8069. Một Odoo service account chuyên dụng với API key là credential duy nhất mà portal sử dụng.
 
-### Environment variables needed
+### Biến môi trường cần thiết
 - `ODOO_URL`, `ODOO_DB`, `ODOO_USERNAME`, `ODOO_API_KEY`
 - `JWT_SECRET_KEY`, `JWT_REFRESH_SECRET`
 - `DB_PASSWORD`, `REDIS_URL`
-- `FRONTEND_URL` (for CORS and email links)
+- `FRONTEND_URL` (cho CORS và link email)
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SES_REGION`, `SES_SENDER_EMAIL`
-- ~~`INTERNAL_NOTIFICATION_EMAIL`~~ — removed: store notifications go to the PO creator's email from Odoo, not a generic inbox
-- `ADMIN_INITIAL_PASSWORD` (used to seed the first admin account on first startup)
+- ~~`INTERNAL_NOTIFICATION_EMAIL`~~ — đã bỏ: thông báo cửa hàng gửi đến email của PO creator từ Odoo, không phải hộp thư chung
+- `ADMIN_INITIAL_PASSWORD` (dùng để seed tài khoản admin đầu tiên khi khởi động lần đầu)
 
 ---
 
-## Phase 1 — Odoo Integration Layer
-**Effort: 1–2 days**
+## Phase 1 — Tầng Tích Hợp Odoo
+**Ước tính: 1–2 ngày**
 
-### Objectives
-- Build the Odoo XML-RPC client as a singleton service
-- Implement the vendor-scoped query wrapper (row-level isolation)
-- Implement and schedule the partner sync job
-- Validate all required Odoo queries work correctly against the live instance
+### Mục tiêu
+- Xây dựng Odoo XML-RPC client dưới dạng singleton service
+- Triển khai vendor-scoped query wrapper (phân lập theo hàng)
+- Triển khai và lên lịch job đồng bộ partner
+- Xác minh tất cả các query Odoo cần thiết hoạt động đúng với instance thực
 
-### Key design decisions
-- **Singleton OdooClient:** authenticates once at startup, reuses the `uid` for all calls. Reconnects automatically on connection drop
-- **VendorScopedOdooClient:** a wrapper that injects `[['partner_id', '=', partner_id]]` into every domain filter at the service layer — no route handler can accidentally omit vendor scoping
-- **Sync job scheduling:** APScheduler running inside the FastAPI process, every 6 hours for vendor profiles. Can also be triggered manually via an internal admin endpoint
-- **Odoo → Portal sync (TBD):** Mechanism for portal to learn when store confirms a Receipt is pending team confirmation. Options: webhook (requires Odoo module), polling, or nightly batch. Regardless of mechanism, portal will read confirmed `qty_done` via XML-RPC and update DO status to Done
-- **PDF session:** a separate `requests.Session()` authenticated via `/web/session/authenticate` is maintained for PDF downloads — the XML-RPC `uid` cannot access `/report/pdf/` endpoints
+### Các quyết định thiết kế chính
+- **Singleton OdooClient:** xác thực một lần khi khởi động, tái sử dụng `uid` cho tất cả các lời gọi. Tự động kết nối lại khi bị ngắt kết nối
+- **VendorScopedOdooClient:** một wrapper inject `[['partner_id', '=', partner_id]]` vào mọi domain filter ở tầng service — không có route handler nào có thể vô tình bỏ qua vendor scoping
+- **Lên lịch sync job:** APScheduler chạy trong tiến trình FastAPI, mỗi 6 giờ cho hồ sơ vendor. Có thể kích hoạt thủ công qua internal admin endpoint
+- **Odoo → Portal sync (TBD):** Cơ chế để portal biết khi cửa hàng xác nhận Receipt đang chờ xác nhận từ team. Các lựa chọn: webhook (cần Odoo module), polling, hoặc nightly batch. Dù cơ chế nào, portal sẽ đọc `qty_done` đã xác nhận qua XML-RPC và cập nhật trạng thái DO thành Done
+- **PDF session:** một `requests.Session()` riêng biệt được xác thực qua `/web/session/authenticate` được duy trì để tải PDF — `uid` XML-RPC không thể truy cập các endpoint `/report/pdf/`
 
-### Odoo models in scope
-| Model | Purpose | Key fields |
+### Các model Odoo trong phạm vi
+| Model | Mục đích | Các trường chính |
 |---|---|---|
-| `res.partner` | Vendor profile sync | `id`, `name`, `email` (required — sync skips partners with no email), `company_name`, `phone`, `mobile`, `vat` (Tax ID), `is_vendor` (filter: only sync where `is_vendor = True` and `email` is set) |
-| `purchase.order` | PO list, detail, confirmation, rejection | `name`, `partner_id`, `state`, `date_order`, `date_planned` (Expected Arrival), `amount_total`, `order_line`, `picking_ids`, `user_id` (PO creator for email) — `button_confirm` or `button_cancel` called on vendor action |
-| `purchase.order.line` | PO line items | `product_id`, `name`, `product_qty`, `qty_received`, `price_unit`, `product_uom` (UoM for this line) |
-| `product.product` | Product info for DO PDF | `id`, `name`, `barcode` |
-| `stock.picking` | Receipt header | `name`, `state`, `scheduled_date`, `origin`, `move_line_ids` |
-| `stock.move.line` | Receipt line items | `product_id`, `product_uom_qty`, `qty_done`, `lot_id`, `state` |
-| `stock.warehouse` | Store ID for DO PDF | `code` (short name, used as Store ID on printed DO) |
+| `res.partner` | Đồng bộ hồ sơ vendor | `id`, `name`, `email` (bắt buộc — sync bỏ qua partner không có email), `company_name`, `phone`, `mobile`, `vat` (Mã số thuế), `is_vendor` (bộ lọc: chỉ sync nơi `is_vendor = True` và có `email`) |
+| `purchase.order` | Danh sách PO, chi tiết, xác nhận, từ chối | `name`, `partner_id`, `state`, `date_order`, `date_planned` (Expected Arrival), `amount_total`, `order_line`, `picking_ids`, `user_id` (PO creator để gửi email) — gọi `button_confirm` hoặc `button_cancel` khi vendor hành động |
+| `purchase.order.line` | Các dòng sản phẩm PO | `product_id`, `name`, `product_qty`, `qty_received`, `price_unit`, `product_uom` (UoM của dòng này) |
+| `product.product` | Thông tin sản phẩm cho DO PDF | `id`, `name`, `barcode` |
+| `stock.picking` | Header Receipt | `name`, `state`, `scheduled_date`, `origin`, `move_line_ids` |
+| `stock.move.line` | Các dòng Receipt | `product_id`, `product_uom_qty`, `qty_done`, `lot_id`, `state` |
+| `stock.warehouse` | Mã cửa hàng cho DO PDF | `code` (tên ngắn, dùng làm Mã cửa hàng trên DO in) |
 
-### Odoo 16 CE field name gotchas
-- `stock.move.line.qty_done` → renamed to `quantity` in Odoo 17+
-- `stock.picking.move_lines` → renamed to `move_ids` in Odoo 17+
-- Always specify explicit field lists in `search_read` — reading all fields on Odoo 16 can trigger serialization errors on computed fields like `tax_totals`
+### Lưu ý tên trường Odoo 16 CE
+- `stock.move.line.qty_done` → đổi tên thành `quantity` trong Odoo 17+
+- `stock.picking.move_lines` → đổi tên thành `move_ids` trong Odoo 17+
+- Luôn chỉ định danh sách trường tường minh trong `search_read` — đọc tất cả trường trên Odoo 16 có thể gây lỗi serialization trên các computed field như `tax_totals`
 
-### Data filtering rules (applied at backend, not frontend)
-- POs: only `state IN ('sent', 'purchase', 'cancel')` are returned — `draft` and `done` are excluded
-- Receipts: only `state IN ('assigned', 'done')` are returned
-- All queries are scoped by `partner_id` via VendorScopedOdooClient
+### Quy tắc lọc dữ liệu (áp dụng ở backend, không phải frontend)
+- PO: chỉ trả về `state IN ('sent', 'purchase', 'cancel')` — `draft` và `done` bị loại
+- Receipt: chỉ trả về `state IN ('assigned', 'done')`
+- Tất cả các query đều được scoped theo `partner_id` qua VendorScopedOdooClient
 
 ---
 
-## Phase 2 — Auth System
-**Effort: 1 day**
+## Phase 2 — Hệ Thống Xác Thực
+**Ước tính: 1 ngày**
 
-### Objectives
-- Define the `vendor_users`, `admin_users`, `password_reset_tokens`, `delivery_orders`, `delivery_order_lines`, `return_notes`, `return_note_lines`, and `audit_log` database tables
-- Implement JWT access + refresh token issuance and validation, with role claim (`vendor` or `admin`)
-- Implement the vendor invite flow (first-time password set via token from AWS SES email)
-- Implement the forgot-password flow for vendors (same token mechanism)
-- Implement admin account seeding from `ADMIN_INITIAL_PASSWORD` environment variable on first startup
-- Implement the FastAPI auth dependency used by all protected routes, with role-based access control
+### Mục tiêu
+- Định nghĩa các bảng DB: `vendor_users`, `admin_users`, `password_reset_tokens`, `delivery_orders`, `delivery_order_lines`, `return_notes`, `return_note_lines`, và `audit_log`
+- Triển khai JWT access + refresh token cấp phát và xác minh, với role claim (`vendor` hoặc `admin`)
+- Triển khai luồng mời vendor (đặt mật khẩu lần đầu qua token từ email AWS SES)
+- Triển khai luồng quên mật khẩu cho vendor (cùng cơ chế token)
+- Triển khai seed tài khoản admin từ biến môi trường `ADMIN_INITIAL_PASSWORD` khi khởi động lần đầu
+- Triển khai FastAPI auth dependency dùng cho tất cả route được bảo vệ, với role-based access control
 
-### Database tables
+### Các bảng cơ sở dữ liệu
 
 **`admin_users`**
-| Column | Type | Notes |
+| Cột | Kiểu | Ghi chú |
 |---|---|---|
-| `id` | serial PK | internal portal ID |
-| `username` | varchar, unique | login identifier for admin (not an Odoo ID) |
-| `hashed_password` | varchar | seeded from `ADMIN_INITIAL_PASSWORD` on first startup |
-| `full_name` | varchar | manually set |
-| `email` | varchar | for notifications and password reset |
-| `is_active` | boolean | TRUE by default |
+| `id` | serial PK | ID portal nội bộ |
+| `username` | varchar, unique | định danh đăng nhập cho admin (không phải Odoo ID) |
+| `hashed_password` | varchar | được seed từ `ADMIN_INITIAL_PASSWORD` khi khởi động lần đầu |
+| `full_name` | varchar | đặt thủ công |
+| `email` | varchar | để nhận thông báo và đặt lại mật khẩu |
+| `is_active` | boolean | TRUE mặc định |
 | `created_at` | timestamp | |
 | `last_login` | timestamp | |
 
-**Admin account seeding:** On first application startup, if no rows exist in `admin_users`, the backend inserts a default admin account using `ADMIN_INITIAL_PASSWORD` from the environment. The admin must change this password after first login.
+**Seed tài khoản Admin:** Khi ứng dụng khởi động lần đầu, nếu không có dòng nào trong `admin_users`, backend chèn một tài khoản admin mặc định sử dụng `ADMIN_INITIAL_PASSWORD` từ môi trường. Admin phải đổi mật khẩu này sau lần đăng nhập đầu tiên.
 
 **`vendor_users`**
-| Column | Type | Notes |
+| Cột | Kiểu | Ghi chú |
 |---|---|---|
-| `id` | serial PK | internal portal ID |
-| `odoo_partner_id` | integer, unique | **login identifier** — `res.partner.id` from Odoo, permanent, never changes |
-| `email` | varchar | for email notifications only — synced from Odoo `res.partner.email` on account creation, never used for login |
-| `hashed_password` | varchar | NULL until invite accepted |
-| `full_name` | varchar | synced from Odoo — contact person name |
-| `company_name` | varchar | synced from Odoo |
-| `phone` | varchar | synced from Odoo — mobile/phone number |
-| `tax_id` | varchar | synced from Odoo `res.partner.vat` — for DO PDF |
-| `preferred_language` | varchar | `'vi'` or `'en'`, set by vendor, default `'vi'` |
-| `is_active` | boolean | FALSE until first password set |
+| `id` | serial PK | ID portal nội bộ |
+| `odoo_partner_id` | integer, unique | **định danh đăng nhập** — `res.partner.id` từ Odoo, cố định, không bao giờ thay đổi |
+| `email` | varchar | chỉ để gửi email thông báo — được sync từ `res.partner.email` của Odoo khi tạo tài khoản, không dùng để đăng nhập |
+| `hashed_password` | varchar | NULL cho đến khi chấp nhận lời mời |
+| `full_name` | varchar | được sync từ Odoo — tên người liên hệ |
+| `company_name` | varchar | được sync từ Odoo |
+| `phone` | varchar | được sync từ Odoo — số điện thoại di động/cố định |
+| `tax_id` | varchar | được sync từ `res.partner.vat` của Odoo — dùng cho DO PDF |
+| `preferred_language` | varchar | `'vi'` hoặc `'en'`, do vendor đặt, mặc định `'vi'` |
+| `is_active` | boolean | FALSE cho đến khi đặt mật khẩu lần đầu |
 | `created_at` | timestamp | |
-| `last_login` | timestamp | updated on each successful login |
+| `last_login` | timestamp | cập nhật mỗi lần đăng nhập thành công |
 
 **`password_reset_tokens`**
-| Column | Type | Notes |
+| Cột | Kiểu | Ghi chú |
 |---|---|---|
 | `id` | serial PK | |
 | `user_id` | FK → vendor_users | |
 | `token` | varchar, unique | `secrets.token_urlsafe(32)` |
-| `expires_at` | timestamp | 24 hours from creation |
-| `used` | boolean | marked TRUE after use |
+| `expires_at` | timestamp | 24 giờ kể từ khi tạo |
+| `used` | boolean | đánh dấu TRUE sau khi dùng |
 
-**`delivery_orders`** (lock fields merged — no separate `do_locks` table)
-| Column | Type | Notes |
+**`delivery_orders`** (các trường khoá được gộp — không có bảng `do_locks` riêng)
+| Cột | Kiểu | Ghi chú |
 |---|---|---|
-| `id` | serial PK | internal portal DO ID |
-| `po_odoo_id` | integer, unique | Odoo `purchase.order.id` this DO belongs to |
-| `picking_id` | integer | Odoo `stock.picking.id` (linked Receipt) |
-| `vendor_id` | FK → vendor_users | vendor who owns this DO |
-| `delivery_date` | date | vendor-set planned delivery date |
-| `status` | varchar | `draft`, `signed`, `done`, or `cancelled` |
-| `signature_path` | varchar | NULL until signed; server-side path to stored PNG |
-| `pdf_path` | varchar | NULL until signed; server-side path to signed DO PDF |
-| `vendor_comment` | text | optional free-text note submitted by vendor at signing |
-| `signed_at` | timestamp | NULL until signed |
-| `unlocked_at` | timestamp | NULL unless admin unlocked |
-| `unlocked_by` | FK → admin_users | admin who unlocked, NULL if not unlocked |
-| `created_at` | timestamp | when DO was auto-created (on PO confirm) |
-| `updated_at` | timestamp | last edit by vendor |
+| `id` | serial PK | ID DO nội bộ của portal |
+| `po_odoo_id` | integer, unique | Odoo `purchase.order.id` mà DO này thuộc về |
+| `picking_id` | integer | Odoo `stock.picking.id` (Receipt liên kết) |
+| `vendor_id` | FK → vendor_users | vendor sở hữu DO này |
+| `delivery_date` | date | ngày giao hàng theo kế hoạch do vendor đặt |
+| `status` | varchar | `draft`, `signed`, `done`, hoặc `cancelled` |
+| `signature_path` | varchar | NULL cho đến khi ký; đường dẫn phía server đến PNG đã lưu |
+| `pdf_path` | varchar | NULL cho đến khi ký; đường dẫn phía server đến DO PDF đã ký |
+| `vendor_comment` | text | ghi chú tự do tuỳ chọn do vendor gửi khi ký |
+| `signed_at` | timestamp | NULL cho đến khi ký |
+| `unlocked_at` | timestamp | NULL trừ khi admin đã mở khoá |
+| `unlocked_by` | FK → admin_users | admin đã mở khoá, NULL nếu chưa mở khoá |
+| `created_at` | timestamp | thời điểm DO được tạo tự động (khi PO xác nhận) |
+| `updated_at` | timestamp | lần chỉnh sửa cuối của vendor |
 
 **`delivery_order_lines`**
-| Column | Type | Notes |
+| Cột | Kiểu | Ghi chú |
 |---|---|---|
 | `id` | serial PK | |
-| `do_id` | FK → delivery_orders | parent DO |
-| `line_number` | integer | sequential row number |
+| `do_id` | FK → delivery_orders | DO cha |
+| `line_number` | integer | số thứ tự dòng |
 | `product_id` | integer | Odoo `product.product.id` |
-| `product_barcode` | varchar | cached product barcode from Odoo |
-| `product_name` | varchar | cached product name |
-| `uom` | varchar | unit of measure, inherited from PO line (e.g., Thùng 12 Chai, Kg). Cannot be changed by vendor |
-| `ordered_qty` | decimal | quantity from PO line (read-only reference) |
-| `delivery_qty` | decimal | vendor-entered delivery quantity (must be <= ordered_qty) |
-| `received_qty` | decimal | NULL until store confirms receipt; final qty_done from Odoo |
+| `product_barcode` | varchar | barcode sản phẩm được cache từ Odoo |
+| `product_name` | varchar | tên sản phẩm được cache |
+| `uom` | varchar | đơn vị tính, kế thừa từ dòng PO (ví dụ: Thùng 12 Chai, Kg). Không thể thay đổi bởi vendor |
+| `ordered_qty` | decimal | số lượng từ dòng PO (tham chiếu chỉ đọc) |
+| `delivery_qty` | decimal | số lượng giao do vendor nhập (phải <= ordered_qty) |
+| `received_qty` | decimal | NULL cho đến khi cửa hàng xác nhận biên nhận; qty_done cuối cùng từ Odoo |
 
-**`return_notes`** (same structure as delivery_orders, for returns)
-| Column | Type | Notes |
+**`return_notes`** (cùng cấu trúc với delivery_orders, dành cho trả hàng)
+| Cột | Kiểu | Ghi chú |
 |---|---|---|
-| `id` | serial PK | internal portal RN ID |
-| `rpo_odoo_id` | integer, unique | Odoo `purchase.order.id` (the RPO) |
-| `picking_id` | integer | Odoo `stock.picking.id` (linked return receipt) |
-| `vendor_id` | FK → vendor_users | vendor who owns this RN |
-| `pickup_date` | date | vendor-set date to collect returned goods |
-| `status` | varchar | `draft`, `signed`, or `done` (no cancelled — vendor cannot reject RPO) |
-| `signature_path` | varchar | NULL until signed |
-| `pdf_path` | varchar | NULL until signed |
-| `signed_at` | timestamp | NULL until signed |
+| `id` | serial PK | ID RN nội bộ của portal |
+| `rpo_odoo_id` | integer, unique | Odoo `purchase.order.id` (RPO) |
+| `picking_id` | integer | Odoo `stock.picking.id` (biên nhận trả hàng liên kết) |
+| `vendor_id` | FK → vendor_users | vendor sở hữu RN này |
+| `pickup_date` | date | ngày vendor đặt để lấy hàng trả về |
+| `status` | varchar | `draft`, `signed`, hoặc `done` (không có cancelled — vendor không thể từ chối RPO) |
+| `signature_path` | varchar | NULL cho đến khi ký |
+| `pdf_path` | varchar | NULL cho đến khi ký |
+| `signed_at` | timestamp | NULL cho đến khi ký |
 | `created_at` | timestamp | |
 | `updated_at` | timestamp | |
 
 **`return_note_lines`**
-| Column | Type | Notes |
+| Cột | Kiểu | Ghi chú |
 |---|---|---|
 | `id` | serial PK | |
-| `rn_id` | FK → return_notes | parent RN |
-| `line_number` | integer | sequential row number |
+| `rn_id` | FK → return_notes | RN cha |
+| `line_number` | integer | số thứ tự dòng |
 | `product_id` | integer | Odoo `product.product.id` |
-| `product_barcode` | varchar | cached product barcode |
-| `product_name` | varchar | cached product name |
-| `uom` | varchar | unit of measure from RPO line |
-| `return_qty` | decimal | quantity being returned (read-only — set by store, vendor cannot change) |
+| `product_barcode` | varchar | barcode sản phẩm được cache |
+| `product_name` | varchar | tên sản phẩm được cache |
+| `uom` | varchar | đơn vị tính từ dòng RPO |
+| `return_qty` | decimal | số lượng đang trả (chỉ đọc — do cửa hàng đặt, vendor không thể thay đổi) |
 
 **`audit_log`**
-| Column | Type | Notes |
+| Cột | Kiểu | Ghi chú |
 |---|---|---|
 | `id` | serial PK | |
-| `actor_type` | varchar | `vendor` or `admin` |
-| `actor_id` | integer | `vendor_users.id` or `admin_users.id` |
-| `action` | varchar | one of: `login`, `po_confirm`, `po_reject`, `po_auto_cancel`, `do_update`, `do_sign`, `do_unlock`, `rn_confirm_sign`, `receipt_validated` |
-| `target_model` | varchar | e.g. `receipt`, `vendor` |
-| `target_id` | integer | e.g. `picking_id`, `partner_id` |
-| `detail` | jsonb | action-specific metadata (e.g. which lines were updated, old/new qty) |
-| `created_at` | timestamp | when the action occurred |
-| `ip_address` | varchar | client IP for login events |
+| `actor_type` | varchar | `vendor` hoặc `admin` |
+| `actor_id` | integer | `vendor_users.id` hoặc `admin_users.id` |
+| `action` | varchar | một trong: `login`, `po_confirm`, `po_reject`, `po_auto_cancel`, `do_update`, `do_sign`, `do_unlock`, `rn_confirm_sign`, `receipt_validated` |
+| `target_model` | varchar | ví dụ: `receipt`, `vendor` |
+| `target_id` | integer | ví dụ: `picking_id`, `partner_id` |
+| `detail` | jsonb | metadata theo từng hành động (ví dụ: dòng nào được cập nhật, qty cũ/mới) |
+| `created_at` | timestamp | thời điểm hành động xảy ra |
+| `ip_address` | varchar | IP client cho các sự kiện đăng nhập |
 
-### Auth endpoints
-| Method | Endpoint | Description |
+### Các endpoint xác thực
+| Method | Endpoint | Mô tả |
 |---|---|---|
-| POST | `/api/auth/login` | Vendor ID (integer) + password → access + refresh tokens (role: `vendor`) |
-| POST | `/api/admin/auth/login` | Username + password → access + refresh tokens (role: `admin`) |
-| POST | `/api/auth/refresh` | Refresh token → new access token (preserves role) |
-| POST | `/api/auth/set-password` | First-time invite or password reset via token (vendors only) |
-| POST | `/api/auth/forgot-password` | Sends reset email via AWS SES by Vendor ID |
-| POST | `/api/auth/logout` | Blacklists refresh token in Redis |
+| POST | `/api/auth/login` | Vendor ID (số nguyên) + mật khẩu → access + refresh token (role: `vendor`) |
+| POST | `/api/admin/auth/login` | Username + mật khẩu → access + refresh token (role: `admin`) |
+| POST | `/api/auth/refresh` | Refresh token → access token mới (giữ nguyên role) |
+| POST | `/api/auth/set-password` | Đặt mật khẩu lần đầu khi được mời hoặc đặt lại qua token (chỉ cho vendor) |
+| POST | `/api/auth/forgot-password` | Gửi email đặt lại qua AWS SES theo Vendor ID |
+| POST | `/api/auth/logout` | Đưa refresh token vào blacklist trong Redis |
 
 ### JWT role claim
-The JWT access token carries a `role` field (`vendor` or `admin`). All admin-only endpoints check for `role == 'admin'` via a dedicated FastAPI dependency. Vendor endpoints check for `role == 'vendor'`. A vendor token cannot access admin routes, and an admin token cannot be used to impersonate a vendor.
+JWT access token mang trường `role` (`vendor` hoặc `admin`). Tất cả endpoint chỉ dành cho admin kiểm tra `role == 'admin'` qua một FastAPI dependency chuyên dụng. Endpoint vendor kiểm tra `role == 'vendor'`. Token vendor không thể truy cập route admin, và token admin không thể dùng để giả mạo vendor.
 
-### Security considerations
-- **Timing-safe login:** always run `bcrypt.verify` even when the Vendor ID does not exist
-- **Consistent error messages:** same message for unknown Vendor ID and wrong password — never reveal whether the ID exists
-- **Token blacklist:** on logout, refresh token is added to a Redis set with TTL matching remaining token lifetime
-- **Invite token expiry:** 24 hours. If expired, vendor must request a new one via forgot-password
+### Các lưu ý bảo mật
+- **Đăng nhập an toàn về timing:** luôn chạy `bcrypt.verify` kể cả khi Vendor ID không tồn tại
+- **Thông báo lỗi nhất quán:** cùng một thông báo cho Vendor ID không tồn tại và mật khẩu sai — không tiết lộ ID có tồn tại hay không
+- **Token blacklist:** khi đăng xuất, refresh token được thêm vào Redis set với TTL khớp thời gian còn lại của token
+- **Hết hạn invite token:** 24 giờ. Nếu hết hạn, vendor phải yêu cầu token mới qua quên mật khẩu
 
 ---
 
-## Phase 3 — Core API Endpoints
-**Effort: 2–3 days**
+## Phase 3 — Các API Endpoint Cốt Lõi
+**Ước tính: 2–3 ngày**
 
-### Objectives
-- Implement all data endpoints with vendor-scoped Odoo queries
-- Enforce DO locking logic server-side
-- Implement the PDF generation and signing pipeline
-- Implement webhook receiver for Odoo receipt validation
-- Implement all email notification triggers via AWS SES
+### Mục tiêu
+- Triển khai tất cả endpoint dữ liệu với vendor-scoped Odoo queries
+- Thực thi logic khoá DO phía server
+- Triển khai pipeline tạo và ký PDF
+- Triển khai webhook receiver cho xác nhận biên nhận Odoo
+- Triển khai tất cả trigger thông báo email qua AWS SES
 
-### Full endpoint list
-| Method | Endpoint | Description |
+### Danh sách đầy đủ endpoint
+| Method | Endpoint | Mô tả |
 |---|---|---|
-| GET | `/api/vendors/me` | Current vendor profile |
-| PATCH | `/api/vendors/me/language` | Update preferred language (`vi` or `en`) |
-| GET | `/api/purchase-orders` | Paginated PO list with portal statuses, filterable by PO number and date range |
-| GET | `/api/purchase-orders/{id}` | PO detail with order lines + linked DO + receipt comparison |
-| POST | `/api/purchase-orders/{id}/confirm` | Confirm a Sent RFQ — calls `button_confirm` on Odoo; returns 409 if PO is not in `sent` state |
-| POST | `/api/purchase-orders/{id}/reject` | Reject a Sent RFQ — calls `button_cancel` on Odoo + email to PO creator; returns 409 if PO is not in `sent` state |
-| GET | `/api/delivery-orders/{do_id}` | DO detail with product lines, delivery date, delivery qty, and received qty (when Done) |
-| PATCH | `/api/delivery-orders/{do_id}/lines` | Update quantities + delivery date on the DO (blocked if signed/locked); qty must be <= ordered qty |
-| POST | `/api/delivery-orders/{do_id}/sign` | Submit signature PNG + optional comment, lock DO, push to Odoo Receipt, generate PDF |
-| GET | `/api/delivery-orders/{do_id}/pdf` | Download signed DO PDF (available post-signature, can be called multiple times for printing) |
-| GET | `/api/return-orders` | Paginated RPO list for current vendor |
-| GET | `/api/return-orders/{id}` | RPO detail with return lines and linked Return Note |
-| GET | `/api/return-notes/{rn_id}` | Return Note detail with product lines and pickup date |
-| PATCH | `/api/return-notes/{rn_id}/pickup-date` | Set or update pickup date on the RN (blocked if signed) |
-| POST | `/api/return-notes/{rn_id}/confirm-and-sign` | Confirm RPO + submit signature PNG in one step. Locks RN, generates PDF |
-| GET | `/api/return-notes/{rn_id}/pdf` | Download signed RN PDF (same format as DO PDF) |
-| GET | `/api/export` | Export data as PDF or CSV. Query params: `format` (pdf/csv), `type` (individual/summary), `ids` (for bulk), `date_from`, `date_to`. Includes POs, DOs, RPOs, RNs |
-| POST | `/api/webhooks/odoo/receipt-validated` | Webhook receiver: Odoo notifies portal when Receipt is validated — triggers DO status → Done + vendor email |
+| GET | `/api/vendors/me` | Hồ sơ vendor hiện tại |
+| PATCH | `/api/vendors/me/language` | Cập nhật ngôn ngữ ưa thích (`vi` hoặc `en`) |
+| GET | `/api/purchase-orders` | Danh sách PO có phân trang với trạng thái portal, có thể lọc theo số PO và khoảng ngày |
+| GET | `/api/purchase-orders/{id}` | Chi tiết PO với các dòng đặt hàng + DO liên kết + so sánh biên nhận |
+| POST | `/api/purchase-orders/{id}/confirm` | Xác nhận Sent RFQ — gọi `button_confirm` trên Odoo; trả về 409 nếu PO không ở trạng thái `sent` |
+| POST | `/api/purchase-orders/{id}/reject` | Từ chối Sent RFQ — gọi `button_cancel` trên Odoo + email đến PO creator; trả về 409 nếu PO không ở trạng thái `sent` |
+| GET | `/api/delivery-orders/{do_id}` | Chi tiết DO với các dòng sản phẩm, ngày giao hàng, qty giao, và qty nhận (khi Done) |
+| PATCH | `/api/delivery-orders/{do_id}/lines` | Cập nhật số lượng + ngày giao hàng trên DO (bị chặn nếu đã ký/khoá); qty phải <= qty đặt hàng |
+| POST | `/api/delivery-orders/{do_id}/sign` | Gửi PNG chữ ký + ghi chú tuỳ chọn, khoá DO, đẩy lên Odoo Receipt, tạo PDF |
+| GET | `/api/delivery-orders/{do_id}/pdf` | Tải xuống DO PDF đã ký (có thể gọi nhiều lần để in) |
+| GET | `/api/return-orders` | Danh sách RPO có phân trang cho vendor hiện tại |
+| GET | `/api/return-orders/{id}` | Chi tiết RPO với các dòng trả hàng và Return Note liên kết |
+| GET | `/api/return-notes/{rn_id}` | Chi tiết Return Note với các dòng sản phẩm và ngày lấy hàng |
+| PATCH | `/api/return-notes/{rn_id}/pickup-date` | Đặt hoặc cập nhật ngày lấy hàng trên RN (bị chặn nếu đã ký) |
+| POST | `/api/return-notes/{rn_id}/confirm-and-sign` | Xác nhận RPO + gửi PNG chữ ký trong một bước. Khoá RN, tạo PDF |
+| GET | `/api/return-notes/{rn_id}/pdf` | Tải xuống RN PDF đã ký (cùng định dạng với DO PDF) |
+| GET | `/api/export` | Xuất dữ liệu dưới dạng PDF hoặc CSV. Query params: `format` (pdf/csv), `type` (individual/summary), `ids` (bulk), `date_from`, `date_to`. Bao gồm PO, DO, RPO, RN |
+| POST | `/api/webhooks/odoo/receipt-validated` | Webhook receiver: Odoo thông báo portal khi Receipt được validated — kích hoạt DO status → Done + email vendor |
 
-### Admin-only endpoints
-| Method | Endpoint | Description |
+### Endpoint chỉ dành cho Admin
+| Method | Endpoint | Mô tả |
 |---|---|---|
-| GET | `/api/admin/vendors` | List all vendor accounts with status, last login, signed DO count, pending DO count |
-| GET | `/api/admin/vendors/{partner_id}` | Drill into a specific vendor — their POs and DOs (read-only) |
-| PATCH | `/api/admin/vendors/{partner_id}/deactivate` | Deactivate a vendor account |
-| PATCH | `/api/admin/vendors/{partner_id}/reactivate` | Reactivate a vendor account |
-| POST | `/api/admin/sync` | Manually trigger the Odoo partner sync job |
-| GET | `/api/admin/sync/status` | Return last sync time, number of vendors synced, list of skipped vendors (no email) |
-| GET | `/api/admin/delivery-orders/{do_id}/pdf` | Download any vendor's signed DO PDF |
-| POST | `/api/admin/delivery-orders/{do_id}/unlock` | Remove the DO lock — sends email to vendor, vendor can update and re-sign |
-| GET | `/api/admin/audit-log` | Paginated audit log view, filterable by actor, action type, and date range |
+| GET | `/api/admin/vendors` | Liệt kê tất cả tài khoản vendor với trạng thái, lần đăng nhập cuối, số DO đã ký, số DO đang chờ |
+| GET | `/api/admin/vendors/{partner_id}` | Xem chi tiết một vendor cụ thể — PO và DO của họ (chỉ đọc) |
+| PATCH | `/api/admin/vendors/{partner_id}/deactivate` | Vô hiệu hoá tài khoản vendor |
+| PATCH | `/api/admin/vendors/{partner_id}/reactivate` | Kích hoạt lại tài khoản vendor |
+| POST | `/api/admin/sync` | Kích hoạt thủ công job đồng bộ partner Odoo |
+| GET | `/api/admin/sync/status` | Trả về thời gian sync cuối, số vendor đã sync, danh sách vendor bị bỏ qua (không có email) |
+| GET | `/api/admin/delivery-orders/{do_id}/pdf` | Tải xuống DO PDF đã ký của bất kỳ vendor nào |
+| POST | `/api/admin/delivery-orders/{do_id}/unlock` | Gỡ bỏ khoá DO — gửi email đến vendor, vendor có thể cập nhật và ký lại |
+| GET | `/api/admin/audit-log` | Xem audit log có phân trang, có thể lọc theo actor, loại hành động, và khoảng ngày |
 
-All admin endpoints require `role == 'admin'` in the JWT. They are prefixed with `/api/admin/` to make the distinction explicit and apply a separate rate limiting policy.
+Tất cả endpoint admin yêu cầu `role == 'admin'` trong JWT. Chúng có prefix `/api/admin/` để phân biệt rõ ràng và áp dụng rate limiting policy riêng.
 
-### PO list filtering
-The `GET /api/purchase-orders` endpoint accepts the following optional query parameters:
-- `q` — partial match on PO number (e.g. `PO004`)
-- `date_from` — filter POs with `date_order >= date_from`
-- `date_to` — filter POs with `date_order <= date_to`
-- `page` and `page_size` — pagination (default page size: 20)
+### Lọc danh sách PO
+Endpoint `GET /api/purchase-orders` chấp nhận các query parameter tuỳ chọn sau:
+- `q` — tìm kiếm một phần số PO (ví dụ: `PO004`)
+- `date_from` — lọc PO có `date_order >= date_from`
+- `date_to` — lọc PO có `date_order <= date_to`
+- `page` và `page_size` — phân trang (page size mặc định: 20)
 
-Filtering is applied server-side in the Odoo domain filter, not in the frontend.
+Lọc được áp dụng phía server trong Odoo domain filter, không phải ở frontend.
 
-### DO locking and unlocking approach
-- When `POST /api/delivery-orders/{do_id}/sign` is called, the backend sets `status = 'signed'`, stores signature/PDF paths, and sets `signed_at` on the `delivery_orders` row
-- Any subsequent `PATCH /lines` call on a signed DO returns HTTP 423 (Locked)
-- The DO detail endpoint returns `status` — the frontend disables all editing when status is not `draft`
-- On signing, the backend pushes delivery date + set quantities to the Odoo Receipt via XML-RPC
-- **Unlocking:** a portal admin calls `POST /api/admin/delivery-orders/{do_id}/unlock`, which resets status to `draft`, sets `unlocked_at` + `unlocked_by`, clears signature/PDF paths, sends an email to the vendor, and logs the action. The vendor can then update quantities and re-sign.
+### Cách tiếp cận khoá và mở khoá DO
+- Khi `POST /api/delivery-orders/{do_id}/sign` được gọi, backend đặt `status = 'signed'`, lưu đường dẫn chữ ký/PDF, và đặt `signed_at` trên dòng `delivery_orders`
+- Bất kỳ lời gọi `PATCH /lines` tiếp theo trên DO đã ký đều trả về HTTP 423 (Locked)
+- Endpoint chi tiết DO trả về `status` — frontend vô hiệu hoá tất cả chỉnh sửa khi status không phải `draft`
+- Khi ký, backend đẩy ngày giao hàng + số lượng đã đặt lên Odoo Receipt qua XML-RPC
+- **Mở khoá:** portal admin gọi `POST /api/admin/delivery-orders/{do_id}/unlock`, đặt lại status về `draft`, đặt `unlocked_at` + `unlocked_by`, xoá đường dẫn chữ ký/PDF, gửi email đến vendor, và ghi log hành động. Vendor có thể cập nhật số lượng và ký lại.
 
-### Validation approach (no portal-side `button_validate`)
-Since the store decides on backorders in Odoo, the portal does **not** call `button_validate`. The vendor's role is:
-1. Edit the DO: delivery date + quantities (qty <= ordered qty, multiple saves allowed)
-2. Sign the DO (locks the portal record, pushes set quantities to Odoo Receipt)
+### Cách tiếp cận validation (không có `button_validate` phía portal)
+Vì cửa hàng quyết định về backorder trong Odoo, portal **không** gọi `button_validate`. Vai trò của vendor là:
+1. Chỉnh sửa DO: ngày giao hàng + số lượng (qty <= qty đặt hàng, cho phép lưu nhiều lần)
+2. Ký DO (khoá bản ghi portal, đẩy số lượng đã đặt lên Odoo Receipt)
 
-The Odoo picking remains in `assigned` state after the vendor signs — the store sees the set quantities and validates in Odoo at their discretion. Only when the store confirms the Receipt does `qty_done` get finalized.
+Odoo picking vẫn ở trạng thái `assigned` sau khi vendor ký — cửa hàng thấy số lượng đã điền và xác nhận trong Odoo tuỳ ý. Chỉ khi cửa hàng xác nhận Receipt thì `qty_done` mới được finalize.
 
 ### Receipt validated (Odoo → Portal)
-When the store confirms a Receipt in Odoo, the portal is notified (sync mechanism TBD — pending team confirmation):
-1. Portal receives notification with `picking_id`
-2. Portal reads the confirmed `qty_done` values from Odoo via XML-RPC
-3. DO status on portal changes to **Done** — final received amounts are stored on DO lines
-4. Portal sends email to vendor confirming receipt. If any quantities differ between DO and receipt, the email includes a discrepancy alert
-5. Vendor can log into portal to view details and export PDF/CSV
+Khi cửa hàng xác nhận Receipt trong Odoo, portal được thông báo (cơ chế sync TBD — chờ xác nhận từ team):
+1. Portal nhận thông báo với `picking_id`
+2. Portal đọc các giá trị `qty_done` đã xác nhận từ Odoo qua XML-RPC
+3. Trạng thái DO trên portal chuyển thành **Done** — số lượng thực tế nhận được được lưu trên các dòng DO
+4. Portal gửi email đến vendor xác nhận biên nhận. Nếu có số lượng chênh lệch giữa DO và biên nhận, email bao gồm cảnh báo
+5. Vendor có thể đăng nhập portal để xem chi tiết và xuất PDF/CSV
 
-### Audit logging approach
-Every key action is written to the `audit_log` table synchronously within the same request. The logged action types are:
+### Cách tiếp cận audit logging
+Mỗi hành động chính được ghi vào bảng `audit_log` đồng bộ trong cùng request. Các loại hành động được ghi:
 
-| Action | Trigger | Detail stored |
+| Hành động | Trigger | Chi tiết được lưu |
 |---|---|---|
-| `login` | Successful vendor or admin login | actor type, actor ID, IP address, timestamp |
-| `po_confirm` | `POST /purchase-orders/:id/confirm` | PO ID, PO name, previous state (`sent`), new state (`purchase`) |
-| `po_reject` | `POST /purchase-orders/:id/reject` | PO ID, PO name, previous state (`sent`), new state (`cancel`) |
-| `po_auto_cancel` | Scheduled job (7 days past Expected Arrival) | PO ID, PO name, Expected Arrival date, days overdue |
-| `do_update` | `PATCH /delivery-orders/:id/lines` | DO ID, list of lines with old and new quantities |
-| `do_sign` | `POST /delivery-orders/:id/sign` | DO ID, vendor comment (if any), PDF path, signature path |
-| `do_unlock` | `POST /admin/delivery-orders/:id/unlock` | DO ID, admin who unlocked |
-| `receipt_validated` | Odoo → Portal notification | picking ID, DO status → Done, any quantity differences noted |
+| `login` | Vendor hoặc admin đăng nhập thành công | loại actor, actor ID, IP address, timestamp |
+| `po_confirm` | `POST /purchase-orders/:id/confirm` | PO ID, tên PO, trạng thái trước (`sent`), trạng thái sau (`purchase`) |
+| `po_reject` | `POST /purchase-orders/:id/reject` | PO ID, tên PO, trạng thái trước (`sent`), trạng thái sau (`cancel`) |
+| `po_auto_cancel` | Scheduled job (7 ngày sau Expected Arrival) | PO ID, tên PO, ngày Expected Arrival, số ngày quá hạn |
+| `do_update` | `PATCH /delivery-orders/:id/lines` | DO ID, danh sách dòng với qty cũ và mới |
+| `do_sign` | `POST /delivery-orders/:id/sign` | DO ID, ghi chú vendor (nếu có), đường dẫn PDF, đường dẫn chữ ký |
+| `do_unlock` | `POST /admin/delivery-orders/:id/unlock` | DO ID, admin đã mở khoá |
+| `receipt_validated` | Thông báo Odoo → Portal | picking ID, DO status → Done, mọi chênh lệch số lượng |
 
-The audit log is viewable by admins via `GET /api/admin/audit-log`, filterable by actor, action type, and date range, paginated at 50 rows per page. It is never editable or deletable through the portal.
+Audit log có thể xem bởi admin qua `GET /api/admin/audit-log`, có thể lọc theo actor, loại hành động, và khoảng ngày, phân trang 50 dòng mỗi trang. Không thể chỉnh sửa hoặc xoá qua portal.
 
-### Email notifications (AWS SES)
+### Thông báo email (AWS SES)
 
-| Trigger | Recipient | Content |
+| Trigger | Người nhận | Nội dung |
 |---|---|---|
-| New vendor synced | Vendor | Welcome email with Vendor ID (integer) + set-password link |
-| Forgot password requested | Vendor | Reset link (24h expiry) |
-| Vendor rejects RFQ | PO creator (store staff) | PO rejected + cancelled in Odoo |
-| PO auto-cancelled (7 days) | Vendor + PO creator | PO auto-cancelled — no response within 7 days past Expected Arrival |
-| Store confirms receipt | Vendor | Receipt confirmed. Alerts if any quantities differ between DO and receipt |
-| DO unlocked by admin | Vendor | DO has been unlocked for re-editing |
-| RPO created by store | Vendor | Sent by Odoo natively (Send by Email button) — not via AWS SES |
+| Vendor mới được sync | Nhà cung cấp | Email chào mừng với Vendor ID (số nguyên) + link đặt mật khẩu |
+| Yêu cầu quên mật khẩu | Nhà cung cấp | Link đặt lại (hết hạn sau 24h) |
+| Vendor từ chối RFQ | PO creator (nhân viên cửa hàng) | PO bị từ chối + hủy trong Odoo |
+| PO tự động hủy (7 ngày) | Nhà cung cấp + PO creator | PO tự động hủy — không phản hồi trong 7 ngày sau Expected Arrival |
+| Cửa hàng xác nhận biên nhận | Nhà cung cấp | Xác nhận biên nhận. Cảnh báo nếu có số lượng chênh lệch giữa DO và biên nhận |
+| DO được admin mở khoá | Nhà cung cấp | DO đã được mở khoá để chỉnh sửa lại |
+| RPO được cửa hàng tạo | Nhà cung cấp | Gửi bởi Odoo nội bộ (nút Send by Email) — không qua AWS SES |
 
-**Not emailed:** Vendor confirms PO (data pushed to Odoo in real-time), Vendor signs DO/RN (data pushed to Odoo automatically).
+**Không gửi email:** Vendor xác nhận PO (dữ liệu được đẩy lên Odoo theo thời gian thực), Vendor ký DO/RN (dữ liệu được đẩy lên Odoo tự động).
 
-All portal-sent emails use AWS SES in the vendor's `preferred_language` for vendor-facing emails, and in Vietnamese for store-facing emails. Store email goes to the PO creator's email (from Odoo `purchase.order.user_id`), not a generic inbox. RPO notification is sent by Odoo itself, not by the portal.
+Tất cả email do portal gửi dùng AWS SES theo `preferred_language` của vendor cho email gửi đến vendor, và tiếng Việt cho email gửi đến cửa hàng. Email cửa hàng gửi đến email của PO creator (từ `purchase.order.user_id` của Odoo), không phải hộp thư chung. Thông báo RPO được Odoo gửi, không phải portal.
 
-### DO / RN PDF pipeline approach
-1. Check lock record — PDF only generated after signature is submitted
-2. Generate the document as HTML rendered to PDF with WeasyPrint, **in Vietnamese**
-3. Store the PDF on the server filesystem (retained for 24 months, matching PO retention)
-4. Return the PDF as a binary response with `Content-Disposition: attachment` — vendor can call this endpoint multiple times to print
+### Cách tiếp cận pipeline DO / RN PDF
+1. Kiểm tra bản ghi khoá — PDF chỉ được tạo sau khi chữ ký được gửi
+2. Tạo tài liệu dưới dạng HTML render sang PDF bằng WeasyPrint, **bằng tiếng Việt**
+3. Lưu PDF trên filesystem server (giữ 24 tháng, khớp với thời hạn lưu PO)
+4. Trả về PDF dưới dạng binary response với `Content-Disposition: attachment` — vendor có thể gọi endpoint này nhiều lần để in
 
-**Note:** The Return Note (RN) PDF uses the **same layout and content** as the DO PDF, with the title changed to "Bien Ban Tra Hang" and the delivery date replaced by the pickup date.
+**Lưu ý:** RN PDF dùng **cùng layout và nội dung** với DO PDF, với tiêu đề đổi thành "Biên Bản Trả Hàng" và ngày giao hàng được thay thế bằng ngày lấy hàng.
 
-### DO PDF content specification
-The printed DO PDF includes the following sections, all in Vietnamese:
+### Đặc tả nội dung DO PDF
+DO PDF in ra bao gồm các phần sau, tất cả bằng tiếng Việt:
 
 **Header:**
-- PO number displayed as a **Code128 barcode** (scannable by store's handheld device)
+- Số PO hiển thị dưới dạng **barcode Code128** (có thể quét bằng máy quét cầm tay của cửa hàng)
 - Vendor ID / Mã NCC (`res.partner.id`)
-- Vendor Tax ID / Mã số thuế (`res.partner.vat`)
-- Vendor mobile phone / Số điện thoại (`res.partner.phone` or `mobile`)
-- Vendor contact email / Email liên hệ (`res.partner.email`)
-- Store ID / Mã cửa hàng (`stock.warehouse.code` — the warehouse short name)
-- PO Confirmation Date / Ngày xác nhận đơn hàng
-- Delivery Date / Ngày giao hàng (the single date set by vendor on the DO)
+- Mã số thuế Vendor (`res.partner.vat`)
+- Số điện thoại di động Vendor (`res.partner.phone` hoặc `mobile`)
+- Email liên hệ Vendor (`res.partner.email`)
+- Mã cửa hàng (`stock.warehouse.code` — tên ngắn của warehouse)
+- Ngày xác nhận đơn hàng
+- Ngày giao hàng (ngày duy nhất do vendor đặt trên DO)
 
-**Product table columns:**
+**Cột bảng sản phẩm:**
 
-| # | Column (Vietnamese) | Column (English) | Description |
+| # | Cột (Tiếng Việt) | Cột (Tiếng Anh) | Mô tả |
 |---|---|---|---|
-| 1 | Số thứ tự | Line number | Sequential row number |
-| 2 | Mã vạch | Barcode | Product barcode |
-| 3 | Tên sản phẩm | Product name | Product description |
-| 4 | Đơn vị tính | UoM | Unit of measure (inherited from PO, e.g., Thùng 12 Chai, Kg) |
-| 5 | Số lượng giao | Delivery qty | Quantity vendor plans to deliver |
-| 6 | Số lượng thực nhận | Received qty | Left blank — filled by store on paper |
-| 8 | SL chênh lệch | Discrepancy qty | Left blank — for store to note differences |
-| 9 | Ghi chú | Notes | Left blank — for store notes |
+| 1 | Số thứ tự | Line number | Số thứ tự dòng |
+| 2 | Mã vạch | Barcode | Barcode sản phẩm |
+| 3 | Tên sản phẩm | Product name | Mô tả sản phẩm |
+| 4 | Đơn vị tính | UoM | Đơn vị tính (kế thừa từ PO, ví dụ: Thùng 12 Chai, Kg) |
+| 5 | Số lượng giao | Delivery qty | Số lượng vendor dự kiến giao |
+| 6 | Số lượng thực nhận | Received qty | Để trắng — cửa hàng điền trên giấy |
+| 8 | SL chênh lệch | Discrepancy qty | Để trắng — để cửa hàng ghi chênh lệch |
+| 9 | Ghi chú | Notes | Để trắng — cho ghi chú cửa hàng |
 
 **Footer:**
-- Vendor's digital signature (PNG embedded)
-- Vendor comment (if provided at signing)
-- Timestamp of signature
-- Blank signature space for store's physical signature
+- Chữ ký điện tử của vendor (PNG nhúng vào)
+- Ghi chú vendor (nếu có khi ký)
+- Timestamp của chữ ký
+- Ô chữ ký trống cho chữ ký tay của cửa hàng
 
 ---
 
 ## Phase 4 — React Frontend
-**Effort: 3–4 days**
+**Ước tính: 3–4 ngày**
 
-### Objectives
-- Build all portal pages with clean, mobile-friendly UI
-- Implement bilingual support (Vietnamese + English, user-switchable)
-- Implement the `fetch`-based API client with automatic JWT refresh
-- Integrate `signature_pad.js` for signature capture
-- Implement the DO edit form with quantity validation (qty <= ordered) and lock state handling
+### Mục tiêu
+- Xây dựng tất cả trang portal với UI sạch, thân thiện với mobile
+- Triển khai hỗ trợ song ngữ (Tiếng Việt + Tiếng Anh, người dùng tự chuyển đổi)
+- Triển khai API client dựa trên `fetch` với JWT refresh tự động
+- Tích hợp `signature_pad.js` để capture chữ ký
+- Triển khai form chỉnh sửa DO với validation số lượng (qty <= qty đặt) và xử lý trạng thái khoá
 
-### Internationalisation (i18n) approach
-- Use `react-i18next` with two locale files: `vi.json` and `en.json`
-- Language is stored in `vendor_users.preferred_language` (persisted server-side)
-- A language toggle (VI / EN) is visible in the top navigation bar on all pages
-- On language switch, the frontend calls `PATCH /api/vendors/me/language` and updates the i18next locale immediately — no page reload needed
-- Default language: Vietnamese (`vi`)
-- All UI strings, labels, error messages, and button text are translated
-- Email content sent by backend follows the vendor's stored `preferred_language`
+### Cách tiếp cận Internationalisation (i18n)
+- Dùng `react-i18next` với hai file locale: `vi.json` và `en.json`
+- Ngôn ngữ được lưu trong `vendor_users.preferred_language` (lưu trữ phía server)
+- Nút chuyển ngôn ngữ (VI / EN) hiển thị trên thanh điều hướng trên cùng ở tất cả các trang
+- Khi chuyển ngôn ngữ, frontend gọi `PATCH /api/vendors/me/language` và cập nhật locale của i18next ngay lập tức — không cần tải lại trang
+- Ngôn ngữ mặc định: Tiếng Việt (`vi`)
+- Tất cả chuỗi UI, nhãn, thông báo lỗi, và văn bản nút đều được dịch
+- Nội dung email do backend gửi tuân theo `preferred_language` đã lưu của vendor
 
-### Pages & routes
-| Route | Page | Role | Description |
+### Trang & routes
+| Route | Trang | Vai trò | Mô tả |
 |---|---|---|---|
-| `/login` | Login | Both | Vendor ID (integer) + password + language toggle |
-| `/admin/login` | Admin Login | Admin | Username + password (separate login page) |
-| `/set-password` | Set Password | Vendor | First-time invite and forgot-password reset |
-| `/forgot-password` | Forgot Password | Vendor | Enter Vendor ID to receive reset link |
-| `/dashboard` | Dashboard | Vendor | PO list with search/filter, status badges, checkbox selection + "Export" button (PDF individual/summary or CSV) |
-| `/purchase-orders/:id` | PO Detail | Vendor | Order lines + linked DO + receipt comparison (vendor qty vs store qty) |
-| `/delivery-orders/:id` | DO Detail | Vendor | Product lines with editable delivery qty + single delivery date (locked if signed) |
-| `/delivery-orders/:id/sign` | Sign DO | Vendor | Signature pad + comment field + final confirmation step |
-| `/delivery-orders/:id/pdf` | DO PDF | Vendor | Download/print signed DO PDF (can print multiple times) |
-| `/returns` | Returns List | Vendor | RPO list with search/filter, status badges |
-| `/return-orders/:id` | RPO Detail | Vendor | Return lines + linked Return Note |
-| `/return-notes/:id` | RN Detail | Vendor | Return product lines + pickup date picker (qty read-only) + Confirm & Sign |
-| `/return-notes/:id/pdf` | RN PDF | Vendor | Download/print signed RN PDF |
-| `/profile` | Profile | Vendor | Read-only vendor profile + language preference |
-| `/admin/dashboard` | Admin Dashboard | Admin | Summary stats: vendor counts, pending DOs/RNs, sync status |
-| `/admin/vendors` | Vendor List | Admin | All vendor accounts with status, last login, DO/RN counts |
-| `/admin/vendors/:id` | Vendor Detail | Admin | Specific vendor's POs, DOs, RPOs, RNs (read-only drill-down) |
-| `/admin/sync` | Sync Status | Admin | Last sync time, skipped vendors, manual trigger button |
+| `/login` | Đăng nhập | Cả hai | Vendor ID (số nguyên) + mật khẩu + nút chuyển ngôn ngữ |
+| `/admin/login` | Đăng nhập Admin | Admin | Username + mật khẩu (trang đăng nhập riêng biệt) |
+| `/set-password` | Đặt mật khẩu | Nhà cung cấp | Đặt mật khẩu lần đầu khi được mời và đặt lại khi quên |
+| `/forgot-password` | Quên mật khẩu | Nhà cung cấp | Nhập Vendor ID để nhận link đặt lại |
+| `/dashboard` | Dashboard | Nhà cung cấp | Danh sách PO với tìm kiếm/lọc, badge trạng thái, chọn checkbox + nút "Xuất" (PDF riêng lẻ/tổng hợp hoặc CSV) |
+| `/purchase-orders/:id` | Chi tiết PO | Nhà cung cấp | Các dòng đặt hàng + DO liên kết + so sánh biên nhận (qty vendor vs qty cửa hàng) |
+| `/delivery-orders/:id` | Chi tiết DO | Nhà cung cấp | Các dòng sản phẩm với qty giao có thể chỉnh sửa + ngày giao hàng duy nhất (khoá nếu đã ký) |
+| `/delivery-orders/:id/sign` | Ký DO | Nhà cung cấp | Signature pad + ô ghi chú + bước xác nhận cuối |
+| `/delivery-orders/:id/pdf` | DO PDF | Nhà cung cấp | Tải xuống/in DO PDF đã ký (có thể in nhiều lần) |
+| `/returns` | Danh sách Trả Hàng | Nhà cung cấp | Danh sách RPO với tìm kiếm/lọc, badge trạng thái |
+| `/return-orders/:id` | Chi tiết RPO | Nhà cung cấp | Các dòng trả hàng + Return Note liên kết |
+| `/return-notes/:id` | Chi tiết RN | Nhà cung cấp | Các dòng sản phẩm trả hàng + bộ chọn ngày lấy hàng (qty chỉ đọc) + Xác nhận & Ký |
+| `/return-notes/:id/pdf` | RN PDF | Nhà cung cấp | Tải xuống/in RN PDF đã ký |
+| `/profile` | Hồ sơ | Nhà cung cấp | Hồ sơ vendor chỉ đọc + tuỳ chọn ngôn ngữ |
+| `/admin/dashboard` | Dashboard Admin | Admin | Thống kê tổng hợp: số lượng vendor, DO/RN đang chờ, trạng thái sync |
+| `/admin/vendors` | Danh sách Vendor | Admin | Tất cả tài khoản vendor với trạng thái, lần đăng nhập cuối, số DO/RN |
+| `/admin/vendors/:id` | Chi tiết Vendor | Admin | PO, DO, RPO, RN của vendor cụ thể (xem chi tiết chỉ đọc) |
+| `/admin/sync` | Trạng thái Sync | Admin | Thời gian sync cuối, vendor bị bỏ qua, nút kích hoạt thủ công |
 
-### Admin dashboard content
-The admin dashboard shows the following at a glance:
-- **Vendor summary:** total vendors, active count, inactive count
-- **Vendor table:** sortable list showing vendor name, Vendor ID, account status (active/inactive), last login date, number of signed DOs, number of pending DOs (Draft, not yet signed)
-- **Sync status panel:** last sync timestamp, number of vendors synced, number of vendors skipped (no email), manual "Run Sync Now" button
-- Clicking any vendor row navigates to `/admin/vendors/:id` — a read-only view of that vendor's POs and DOs, with a download button for any signed DO PDF and an unlock button on locked DOs
+### Nội dung dashboard Admin
+Dashboard admin hiển thị tổng quan:
+- **Tóm tắt vendor:** tổng số vendor, số đang hoạt động, số không hoạt động
+- **Bảng vendor:** danh sách có thể sắp xếp hiển thị tên vendor, Vendor ID, trạng thái tài khoản (hoạt động/không hoạt động), ngày đăng nhập cuối, số DO đã ký, số DO đang chờ (Draft, chưa ký)
+- **Panel trạng thái sync:** timestamp sync cuối, số vendor đã sync, số vendor bị bỏ qua (không có email), nút "Chạy Sync Ngay"
+- Click vào bất kỳ dòng vendor nào điều hướng đến `/admin/vendors/:id` — xem chỉ đọc PO và DO của vendor đó, với nút tải xuống cho DO PDF đã ký và nút mở khoá cho DO bị khoá
 
-### Admin navigation
-Admin users see the same top navigation bar as vendors, with additional items: **Vendors**, **Sync Status**, **Audit Log**. The language toggle is present — admin section supports both Vietnamese and English. Admin routes are protected — a vendor JWT cannot access `/admin/*` routes.
+### Điều hướng Admin
+Admin thấy cùng thanh điều hướng trên cùng với vendor, với các mục thêm: **Nhà cung cấp**, **Trạng thái Sync**, **Audit Log**. Nút chuyển ngôn ngữ có mặt — phần admin hỗ trợ cả Tiếng Việt và Tiếng Anh. Các route admin được bảo vệ — JWT vendor không thể truy cập route `/admin/*`.
 
-### HTTP client approach (native fetch)
-- A single `apiFetch(path, options)` wrapper handles all API calls
-- Attaches Bearer token from `localStorage` on every request
-- On 401 response: calls `/api/auth/refresh`, stores new access token, retries once
-- On refresh failure: clears storage, redirects to `/login`
-- No direct `fetch` calls in components — all calls go through this wrapper
+### Cách tiếp cận HTTP client (native fetch)
+- Một wrapper `apiFetch(path, options)` duy nhất xử lý tất cả API call
+- Gắn Bearer token từ `localStorage` vào mỗi request
+- Khi nhận 401: gọi `/api/auth/refresh`, lưu access token mới, thử lại một lần
+- Khi refresh thất bại: xóa storage, chuyển hướng về `/login`
+- Không gọi `fetch` trực tiếp trong component — tất cả đều qua wrapper này
 
-### State management approach
-- **TanStack Query** for all server state — PO list, DO detail, profile
-- **React local state** (`useState`) for form inputs, signature state, UI toggles
-- No global state manager needed at this scope
+### Cách tiếp cận state management
+- **TanStack Query** cho tất cả server state — danh sách PO, chi tiết DO, hồ sơ
+- **React local state** (`useState`) cho form input, trạng thái chữ ký, toggle UI
+- Không cần global state manager ở quy mô này
 
-### Responsive design approach
-- The portal is fully responsive — works on desktop and mobile equally
-- Tailwind CSS utility classes for layout (or equivalent CSS framework)
-- Signature pad canvas resizes to fit the screen width on mobile
-- Tables on mobile collapse to card-style layouts for readability
+### Cách tiếp cận responsive design
+- Portal hoàn toàn responsive — hoạt động tốt trên cả desktop và mobile
+- Tailwind CSS utility classes cho layout (hoặc CSS framework tương đương)
+- Canvas signature pad tự điều chỉnh kích thước theo chiều rộng màn hình trên mobile
+- Bảng trên mobile thu gọn thành layout dạng card để dễ đọc
 
-### Vendor dashboard summary
-Above the PO list, the vendor dashboard shows summary cards:
-- **Waiting** — POs awaiting vendor confirmation
-- **Confirmed** — POs confirmed, DOs in various states
-- **Cancelled** — POs that have been cancelled
+### Tóm tắt dashboard Vendor
+Phía trên danh sách PO, dashboard vendor hiển thị các thẻ tóm tắt:
+- **Chờ xác nhận** — PO đang chờ vendor xác nhận
+- **Đã xác nhận** — PO đã xác nhận, DO đang ở các trạng thái khác nhau
+- **Đã huỷ** — PO đã bị huỷ
 
-### PO list search & filter UI
-- Search bar for PO number (partial match, debounced 300ms before API call)
-- Date range pickers for `date_from` and `date_to`
-- Status badge on each PO row (Waiting / Confirmed / Cancelled) with colour coding
-- DO status shown alongside PO status (Draft / Signed / Done / Cancelled)
-- Pagination controls (previous / next), page size fixed at 20
+### Giao diện tìm kiếm & lọc danh sách PO
+- Thanh tìm kiếm theo số PO (tìm kiếm một phần, debounced 300ms trước khi gọi API)
+- Bộ chọn khoảng ngày cho `date_from` và `date_to`
+- Badge trạng thái trên mỗi dòng PO (Chờ xác nhận / Đã xác nhận / Đã huỷ) với mã màu
+- Trạng thái DO hiển thị cạnh trạng thái PO (Draft / Signed / Done / Cancelled)
+- Điều khiển phân trang (trước / sau), page size cố định là 20
 
-### DO detail — visible fields per product line
-| Field | Vietnamese | Source |
+### Chi tiết DO — các trường hiển thị cho mỗi dòng sản phẩm
+| Trường | Tiếng Việt | Nguồn |
 |---|---|---|
-| Line number | Số thứ tự | Sequential row number |
-| Product barcode | Mã vạch | from Odoo `product.product` → `barcode` |
-| Product name | Tên sản phẩm | `delivery_order_lines` → `product_name` |
-| UoM (read-only) | Đơn vị tính | `delivery_order_lines` → `uom` (inherited from PO line, cannot be changed) |
-| Ordered quantity (read-only) | SL đặt hàng | `delivery_order_lines` → `ordered_qty` (from PO line) |
-| Delivery quantity (editable) | Số lượng giao | `delivery_order_lines` → `delivery_qty` (must be <= ordered_qty) |
-| Received quantity (read-only) | Số lượng thực nhận | `delivery_order_lines` → `received_qty` (NULL until store confirms; shows store's final qty_done) |
-| Unit price | Đơn giá | from Odoo `purchase.order.line` → `price_unit` |
-| Subtotal | Thành tiền | Calculated: unit price x delivery qty (frontend only, not stored) |
+| Số thứ tự | Số thứ tự | Số thứ tự dòng |
+| Barcode sản phẩm | Mã vạch | từ Odoo `product.product` → `barcode` |
+| Tên sản phẩm | Tên sản phẩm | `delivery_order_lines` → `product_name` |
+| UoM (chỉ đọc) | Đơn vị tính | `delivery_order_lines` → `uom` (kế thừa từ dòng PO, không thể thay đổi) |
+| Số lượng đặt hàng (chỉ đọc) | SL đặt hàng | `delivery_order_lines` → `ordered_qty` (từ dòng PO) |
+| Số lượng giao (có thể chỉnh sửa) | Số lượng giao | `delivery_order_lines` → `delivery_qty` (phải <= ordered_qty) |
+| Số lượng thực nhận (chỉ đọc) | Số lượng thực nhận | `delivery_order_lines` → `received_qty` (NULL cho đến khi cửa hàng xác nhận; hiển thị qty_done cuối cùng của cửa hàng) |
+| Đơn giá | Đơn giá | từ Odoo `purchase.order.line` → `price_unit` |
+| Thành tiền | Thành tiền | Tính toán: đơn giá x số lượng giao (chỉ frontend, không lưu) |
 
-### DO detail behaviour
-- Delivery date picker at the top of the DO form
-- Each product line shows all fields above; delivery qty is the only editable field (plus delivery date)
-- Validation: delivery qty must be <= ordered qty — frontend and backend both enforce this
-- "Save" button submits `PATCH /delivery-orders/:id/lines` — can be pressed multiple times before signing
-- If `locked: true` is returned by the API, all inputs are disabled and a lock notice is shown
-- A "Sign DO" button at the bottom is enabled only when delivery date is set and all delivery qty values are > 0
-- Once signed, the page shows a read-only summary with a "Print DO" button
-- After store confirms receipt, the `received_qty` column is populated — vendor sees both their delivery qty and the store's received qty side by side
+### Hành vi chi tiết DO
+- Bộ chọn ngày giao hàng ở đầu form DO
+- Mỗi dòng sản phẩm hiển thị tất cả các trường trên; số lượng giao là trường duy nhất có thể chỉnh sửa (cùng với ngày giao hàng)
+- Validation: số lượng giao phải <= số lượng đặt — cả frontend và backend đều thực thi
+- Nút "Lưu" gửi `PATCH /delivery-orders/:id/lines` — có thể nhấn nhiều lần trước khi ký
+- Nếu API trả về `locked: true`, tất cả input bị vô hiệu hoá và hiển thị thông báo khoá
+- Nút "Ký DO" ở cuối chỉ được bật khi ngày giao hàng đã đặt và tất cả giá trị số lượng giao > 0
+- Sau khi ký, trang hiển thị tóm tắt chỉ đọc với nút "In DO"
+- Sau khi cửa hàng xác nhận biên nhận, cột `received_qty` được điền — vendor thấy cả số lượng giao và số lượng thực nhận của cửa hàng cạnh nhau
 
-### PO detail — DO and receipt view
-The PO detail page shows the linked DO with its status. When the DO is Done (store confirmed receipt):
-- **Vendor DO quantities** — what the vendor planned to deliver
-- **Store received quantities** — what the store actually confirmed in Odoo
-- Per-line comparison, highlighting any differences between delivery and received quantities
+### Chi tiết PO — Xem DO và biên nhận
+Trang chi tiết PO hiển thị DO liên kết với trạng thái của nó. Khi DO ở trạng thái Done (cửa hàng xác nhận biên nhận):
+- **Số lượng DO của vendor** — những gì vendor dự định giao
+- **Số lượng cửa hàng thực nhận** — những gì cửa hàng thực sự xác nhận trong Odoo
+- So sánh từng dòng, làm nổi bật sự khác biệt giữa số lượng giao và số lượng nhận
 
-### PDF history page
-- Lists all DOs the vendor has signed, in reverse chronological order
-- Each row shows: PO number, DO reference, delivery date, date signed, vendor comment (if any), download button
-- Download calls `GET /api/delivery-orders/{do_id}/pdf` — PDFs are retained for 24 months (matching PO retention)
+### Trang lịch sử PDF
+- Liệt kê tất cả DO vendor đã ký, theo thứ tự thời gian đảo ngược
+- Mỗi dòng hiển thị: số PO, mã DO, ngày giao hàng, ngày ký, ghi chú vendor (nếu có), nút tải xuống
+- Tải xuống gọi `GET /api/delivery-orders/{do_id}/pdf` — PDF được giữ 24 tháng (khớp với thời hạn lưu PO)
 
-### Signature and comment capture
-- `signature_pad.js` renders on an HTML5 canvas (resizes for mobile)
-- Optional free-text comment field above the signature pad — vendor can describe delivery conditions or notes
-- "Clear" button resets the canvas only
-- "Confirm & Submit" sends both the signature PNG (base64) and the comment text to `POST /api/delivery-orders/:id/sign`
-- Pad and comment field are disabled after successful submission
-- A loading state is shown while the PDF is being generated server-side
+### Capture chữ ký và ghi chú
+- `signature_pad.js` render trên canvas HTML5 (tự điều chỉnh cho mobile)
+- Ô ghi chú tự do tuỳ chọn phía trên signature pad — vendor có thể mô tả điều kiện giao hàng hoặc ghi chú
+- Nút "Xóa" chỉ reset canvas
+- "Xác nhận & Gửi" gửi cả PNG chữ ký (base64) và văn bản ghi chú lên `POST /api/delivery-orders/:id/sign`
+- Pad và ô ghi chú bị vô hiệu hoá sau khi gửi thành công
+- Hiển thị trạng thái loading khi PDF đang được tạo phía server
 
-### Key UX considerations
-- Login field label: **"Mã nhà cung cấp / Vendor ID"** with helper text explaining it was provided in the welcome email (must be a number input)
-- DO lines show ordered qty, delivery qty, and received qty (when available) side by side for easy comparison
-- Waiting POs show "Confirm PO" and "Reject" buttons prominently
-- Lock notice on signed DOs: "Phiếu giao hàng đã được ký / Delivery Order has been signed"
-- Comment field placeholder: "Ghi chú giao hàng / Delivery notes (optional)"
-- All form submissions disable the button while in flight to prevent double submission
+### Các lưu ý UX quan trọng
+- Nhãn trường đăng nhập: **"Mã nhà cung cấp / Vendor ID"** với văn bản hướng dẫn giải thích đã được cung cấp trong email chào mừng (phải là input kiểu number)
+- Các dòng DO hiển thị số lượng đặt hàng, số lượng giao, và số lượng thực nhận (khi có) cạnh nhau để dễ so sánh
+- PO ở trạng thái Waiting hiển thị nút "Xác nhận PO" và "Từ chối" nổi bật
+- Thông báo khoá trên DO đã ký: "Phiếu giao hàng đã được ký / Delivery Order has been signed"
+- Placeholder ô ghi chú: "Ghi chú giao hàng / Delivery notes (optional)"
+- Tất cả form submission vô hiệu hoá nút khi đang gửi để tránh gửi trùng
 
 ---
 
-## Phase 5 — Security Hardening
-**Effort: 0.5 day**
+## Phase 5 — Tăng Cường Bảo Mật
+**Ước tính: 0.5 ngày**
 
-### Rate limiting strategy (SlowAPI + Redis)
-| Endpoint group | Limit |
+### Chiến lược rate limiting (SlowAPI + Redis)
+| Nhóm endpoint | Giới hạn |
 |---|---|
-| `/api/auth/login` | 5 requests / minute / IP |
-| `/api/auth/forgot-password` | 3 requests / minute / IP |
-| `/api/auth/set-password` | 5 requests / minute / IP |
-| All other `/api/` routes | 60 requests / minute / user |
+| `/api/auth/login` | 5 request / phút / IP |
+| `/api/auth/forgot-password` | 3 request / phút / IP |
+| `/api/auth/set-password` | 5 request / phút / IP |
+| Tất cả route `/api/` khác | 60 request / phút / người dùng |
 
 ### CORS
-- Allow only the exact `FRONTEND_URL` — never wildcard `*` with credentials
+- Chỉ cho phép đúng `FRONTEND_URL` — không bao giờ dùng wildcard `*` với credentials
 - `allow_credentials=True`
 
 ### HTTPS / TLS
-TLS termination is handled at the infrastructure level (load balancer or upstream reverse proxy) — the portal's Nginx does not manage SSL certificates. The portal Nginx listens on HTTP internally and trusts the upstream proxy to enforce HTTPS. Ensure the upstream proxy passes `X-Forwarded-Proto: https` and `X-Real-IP` headers to the backend.
+TLS termination được xử lý ở tầng infrastructure (load balancer hoặc upstream reverse proxy) — Nginx của portal không quản lý SSL certificate. Nginx portal lắng nghe trên HTTP nội bộ và tin tưởng upstream proxy thực thi HTTPS. Đảm bảo upstream proxy truyền header `X-Forwarded-Proto: https` và `X-Real-IP` đến backend.
 
 ### Nginx security headers
 - `X-Frame-Options: DENY`
 - `X-Content-Type-Options: nosniff`
-- `Strict-Transport-Security: max-age=31536000` (set at upstream level if TLS is upstream)
+- `Strict-Transport-Security: max-age=31536000` (đặt ở upstream nếu TLS ở upstream)
 - `Referrer-Policy: no-referrer`
 
-### AWS SES security
-- Dedicated IAM user with `ses:SendEmail` permission only — no other AWS permissions
-- Sender domain verified in SES
-- Credentials stored as Docker secrets, never in `.env` files in production
+### Bảo mật AWS SES
+- IAM user chuyên dụng chỉ có quyền `ses:SendEmail` — không có quyền AWS nào khác
+- Sender domain được xác minh trong SES
+- Credentials được lưu dưới dạng Docker secrets, không bao giờ trong file `.env` trên production
 
 ---
 
-## Phase 6 — Production Deployment
-**Effort: 0.5–1 day**
+## Phase 6 — Triển Khai Production
+**Ước tính: 0.5–1 ngày**
 
-### Service restart policies
-All containers: `restart: unless-stopped`. Health check on backend container (`GET /health`), 3 retries before marking unhealthy.
+### Chính sách khởi động lại service
+Tất cả container: `restart: unless-stopped`. Health check trên backend container (`GET /health`), 3 lần retry trước khi đánh dấu unhealthy.
 
-### Nginx reverse proxy routing
-- All `/api/*` → FastAPI backend container
-- All `/admin/*` → React SPA container (admin routes handled client-side by React Router)
-- All other paths → React SPA container, catch-all serves `index.html`
+### Routing Nginx reverse proxy
+- Tất cả `/api/*` → container FastAPI backend
+- Tất cả `/admin/*` → container React SPA (route admin được xử lý phía client bởi React Router)
+- Tất cả đường dẫn khác → container React SPA, catch-all phục vụ `index.html`
 
-### PostgreSQL backup
-- Daily `pg_dump` via cron on the portal VM
-- Compressed with gzip, stored in `/backups/`, 30-day retention
-- Optionally synced to Azure Blob Storage
-- PDF files stored on server filesystem (24-month retention) — include in VM backup strategy
-- Scheduled cleanup job removes POs and associated DOs, PDFs older than 24 months
+### Backup PostgreSQL
+- `pg_dump` hàng ngày qua cron trên portal VM
+- Nén bằng gzip, lưu trong `/backups/`, giữ 30 ngày
+- Tuỳ chọn đồng bộ lên Azure Blob Storage
+- File PDF lưu trên filesystem server (giữ 24 tháng) — đưa vào chiến lược backup VM
+- Scheduled cleanup job xóa PO và DO, PDF cũ hơn 24 tháng
 
-### Go-live checklist
-- [ ] Odoo service account API key generated and connectivity tested from portal VM
-- [ ] Firewall: portal VM → Odoo VM port 8069 open
-- [ ] AWS SES sender domain verified, IAM credentials configured
-- [ ] Verify PO creator email field is accessible via Odoo XML-RPC (`purchase.order` → `user_id` → `email`)
-- [ ] `ADMIN_INITIAL_PASSWORD` set and first admin account seeded
-- [ ] All production secrets set in Docker secrets files
-- [ ] Upstream load balancer / proxy configured to forward HTTPS traffic
-- [ ] Partner sync job run manually once — initial vendor accounts created
-- [ ] Odoo → Portal sync mechanism configured and tested (webhook, polling, or batch — TBD)
-- [ ] At least one test vendor: invite received → password set → login → dashboard visible → PO confirmed → DO edited + signed → DO PDF printed → delivered to store → store confirms receipt in Odoo → DO status Done → vendor email received
-- [ ] Test RFQ rejection: vendor rejects → Odoo cancels → store email received
-- [ ] Notification emails received by vendor and store
-- [ ] Locked DO confirmed uneditable by vendor
-- [ ] Admin can view vendor, download DO PDF, unlock DO (vendor email received)
-- [ ] Audit log shows all actions from the test run
-- [ ] Vietnamese and English UI both verified on desktop and mobile
+### Checklist go-live
+- [ ] API key tài khoản dịch vụ Odoo được tạo và kiểm tra kết nối từ portal VM
+- [ ] Firewall: portal VM → Odoo VM cổng 8069 mở
+- [ ] Sender domain AWS SES được xác minh, IAM credentials đã cấu hình
+- [ ] Xác minh trường email PO creator có thể truy cập qua Odoo XML-RPC (`purchase.order` → `user_id` → `email`)
+- [ ] `ADMIN_INITIAL_PASSWORD` đã đặt và tài khoản admin đầu tiên đã được seed
+- [ ] Tất cả secrets production đã đặt trong Docker secrets files
+- [ ] Upstream load balancer / proxy đã cấu hình chuyển tiếp HTTPS
+- [ ] Job đồng bộ partner chạy thủ công một lần — tài khoản vendor ban đầu được tạo
+- [ ] Cơ chế sync Odoo → Portal đã cấu hình và kiểm tra (webhook, polling, hoặc batch — TBD)
+- [ ] Ít nhất một vendor thử nghiệm: nhận lời mời → đặt mật khẩu → đăng nhập → thấy dashboard → xác nhận PO → chỉnh sửa + ký DO → in DO PDF → giao đến cửa hàng → cửa hàng xác nhận biên nhận trong Odoo → trạng thái DO Done → nhận email vendor
+- [ ] Kiểm tra từ chối RFQ: vendor từ chối → Odoo hủy → nhận email cửa hàng
+- [ ] Email thông báo nhận được bởi vendor và cửa hàng
+- [ ] DO bị khoá xác nhận vendor không thể chỉnh sửa
+- [ ] Admin có thể xem vendor, tải DO PDF, mở khoá DO (vendor nhận email)
+- [ ] Audit log hiển thị tất cả hành động từ lần chạy thử nghiệm
+- [ ] Giao diện Tiếng Việt và Tiếng Anh đều được xác minh trên desktop và mobile
 
 ---
 
-## Summary Timeline
+## Tóm Tắt Lộ Trình
 
-| Phase | Description | Effort |
+| Phase | Mô tả | Ước tính |
 |---|---|---|
-| 0 | Repo setup, Docker Compose, Odoo API key, AWS SES | 0.5–1 day |
-| 1 | Odoo XML-RPC layer + partner sync job | 1–2 days |
-| 2 | JWT auth + role system + invite/reset flow + DB schema | 1–1.5 days |
-| 3 | Core API endpoints + admin endpoints + PDF + emails | 3–4 days |
-| 4 | React frontend (vendor portal + admin section, bilingual) | 4–5 days |
-| 5 | Security hardening | 0.5 day |
-| 6 | Production deployment + go-live checklist | 0.5–1 day |
-| **Total** | | **~11–15 days** |
+| 0 | Thiết lập repo, Docker Compose, Odoo API key, AWS SES | 0.5–1 ngày |
+| 1 | Tầng Odoo XML-RPC + job đồng bộ partner | 1–2 ngày |
+| 2 | JWT auth + hệ thống role + luồng invite/reset + DB schema | 1–1.5 ngày |
+| 3 | API endpoints cốt lõi + admin endpoints + PDF + emails | 3–4 ngày |
+| 4 | React frontend (vendor portal + phần admin, song ngữ) | 4–5 ngày |
+| 5 | Tăng cường bảo mật | 0.5 ngày |
+| 6 | Triển khai production + checklist go-live | 0.5–1 ngày |
+| **Tổng** | | **~11–15 ngày** |
 
 ---
 
-## Critical Gotchas
+## Các Lưu Ý Quan Trọng
 
-1. **Vendor login uses Vendor ID (integer), not email** — frontend login field must be a `number` input; welcome email must clearly state the Vendor ID; `odoo_partner_id` is the lookup key in `vendor_users`
-2. **Admin login is separate** — admin uses username (not Vendor ID) on a separate login page `/admin/login`; admin JWT carries `role: admin`
-3. **Profile sync never touches `hashed_password`** — only `full_name`, `company_name`, `phone`, `tax_id` are overwritten by the sync job; `email` is synced on initial account creation only, never again
-3. **Portal does not call `button_validate`** — vendor edits DO and signs; Odoo validation is done by the store. The Odoo picking stays in `assigned` state after the vendor signs
-4. **DO locking is portal-side only** — lock state lives in the `delivery_orders` table; Odoo is not aware of it. Admins unlock via the portal admin section
-5. **Admin can unlock DOs — vendor cannot** — the unlock endpoint is admin-only; vendors have no self-service unlock
-6. **PDF requires a separate HTTP session** — the XML-RPC connection cannot fetch `/report/pdf/` endpoints; a distinct `requests.Session()` authenticated via `/web/session/authenticate` is required
-7. **PDFs are stored for 24 months** — a scheduled cleanup job enforces this; ensure the server filesystem has adequate space and is included in the VM backup strategy
-8. **Vendor comment is optional but must be stored** — even if empty, the `vendor_comment` field in `delivery_orders` must be explicitly stored (empty string, not NULL) to distinguish "no comment provided" from a data error
-9. **Audit log is append-only** — no delete or update endpoints for `audit_log`; write failures should be logged but must not cause the parent action to fail (non-blocking)
-10. **Odoo 16 field names** — `qty_done` on `stock.move.line` (not `quantity`), `move_lines` on `stock.picking` (not `move_ids`)
-12. **Partners with no email are skipped** — sync job must log these; they cannot receive the welcome email and must be handled manually (Vendor ID is still assigned by Odoo, email is only needed to deliver the invite)
-13. **Timing-safe authentication** — bcrypt verification must always run, even for unknown Vendor IDs, to prevent user enumeration via response timing
-13. **No axios** — all frontend HTTP calls use native `fetch` wrapped in a single `apiFetch` utility with automatic JWT refresh
-14. **i18n covers both vendor and admin UI** — all portal pages including admin section support Vietnamese and English; vendor-facing emails follow `preferred_language`; store-facing emails are in Vietnamese
-15. **TLS is upstream** — the portal Nginx does not manage certificates; ensure the upstream proxy passes `X-Forwarded-Proto` and `X-Real-IP` headers correctly to the FastAPI backend
-16. **`button_confirm` is a write action on Odoo** — unlike all other vendor-facing data calls which are read-only, PO confirmation calls `execute_kw` with `button_confirm` on `purchase.order`. The Odoo service account must have write permission on `purchase.order`. Verify this permission explicitly — read-only service accounts will silently fail or return an access error
-17. **Guard PO confirmation against double-submit** — the confirm endpoint must re-read the PO state from Odoo before calling `button_confirm`; if the state is already `purchase`, return 409 without calling Odoo again. The frontend must also disable the "Confirm PO" button immediately on click to prevent duplicate calls
+1. **Đăng nhập vendor dùng Vendor ID (số nguyên), không phải email** — trường đăng nhập frontend phải là input `number`; email chào mừng phải nêu rõ Vendor ID; `odoo_partner_id` là lookup key trong `vendor_users`
+2. **Đăng nhập admin riêng biệt** — admin dùng username (không phải Vendor ID) trên trang đăng nhập riêng `/admin/login`; JWT admin mang `role: admin`
+3. **Đồng bộ hồ sơ không bao giờ đụng đến `hashed_password`** — chỉ `full_name`, `company_name`, `phone`, `tax_id` bị ghi đè bởi sync job; `email` chỉ được sync khi tạo tài khoản lần đầu, không bao giờ nữa
+3. **Portal không gọi `button_validate`** — vendor chỉnh sửa DO và ký; Odoo validation do cửa hàng thực hiện. Odoo picking giữ nguyên trạng thái `assigned` sau khi vendor ký
+4. **Khoá DO chỉ phía portal** — trạng thái khoá nằm trong bảng `delivery_orders`; Odoo không biết về nó. Admin mở khoá qua phần admin portal
+5. **Admin có thể mở khoá DO — vendor không thể** — endpoint mở khoá chỉ dành cho admin; vendor không có tùy chọn tự mở khoá
+6. **PDF cần HTTP session riêng** — kết nối XML-RPC không thể tải các endpoint `/report/pdf/`; cần một `requests.Session()` riêng biệt được xác thực qua `/web/session/authenticate`
+7. **PDF được lưu 24 tháng** — scheduled cleanup job thực thi điều này; đảm bảo filesystem server có đủ dung lượng và được đưa vào chiến lược backup VM
+8. **Ghi chú vendor là tuỳ chọn nhưng phải được lưu** — dù trống, trường `vendor_comment` trong `delivery_orders` phải được lưu tường minh (chuỗi rỗng, không phải NULL) để phân biệt "không có ghi chú" với lỗi dữ liệu
+9. **Audit log chỉ ghi thêm** — không có endpoint xóa hoặc cập nhật cho `audit_log`; lỗi ghi phải được log nhưng không được làm hành động cha thất bại (non-blocking)
+10. **Tên trường Odoo 16** — `qty_done` trên `stock.move.line` (không phải `quantity`), `move_lines` trên `stock.picking` (không phải `move_ids`)
