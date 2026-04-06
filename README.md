@@ -217,48 +217,54 @@ Draft RFQs are not shown. Vendors can view PO data for **24 months** from creati
 
 ### 3. Delivery Order & Delivery Workflow
 
-This is the core business process of the portal. It replaces the need for vendors to call or email to confirm delivery quantities.
+This is the core business process of the portal. It covers the full flow from DO creation to physical delivery at the store.
 
 ```
 Purchase Order confirmed in Odoo
          │
          ▼
-Vendor logs into portal
+1 DO auto-created per confirmed PO (ref number follows PO)
          │
          ▼
-Vendor opens the linked Receipt (status: Ready)
+Vendor logs into portal, edits DO:
+  - Single delivery date for the entire DO
+  - Quantities per product line (≤ ordered qty, base UoM only)
+  (can save and come back multiple times — DO remains in Draft)
          │
          ▼
-Vendor enters actual delivered quantity for each product line
-(can save and come back multiple times — nothing is final yet)
+Vendor clicks "Sign DO" — draws digital signature + optional comment
          │
          ▼
-Vendor clicks "Sign & Confirm"
+Portal generates signed DO PDF (Vietnamese, PO as Code128 barcode)
+DO is locked — no further edits on Portal
          │
          ▼
-Vendor draws their digital signature on screen
+Vendor downloads and prints PDF (2 copies)
          │
          ▼
-Portal generates a signed PDF (Odoo delivery slip + confirmation page with signature)
-Receipt is locked — no further edits possible from the portal
+Vendor brings 2 DO copies + goods to the store (cửa hàng)
          │
-         ├──▶ Vendor receives confirmation email with PDF attached
+         ▼
+Store receives goods, checks quantities
+Both parties sign physically on 2 paper copies — each keeps 1
          │
-         └──▶ Internal team receives alert email with vendor name, PO ref, link to Odoo
-                         │
-                         ▼
-              Internal team reviews quantities in Odoo
-                         │
-                         ▼
-              Admin validates (or adjusts) the receipt in Odoo
-              Admin decides on backorder if quantities are short
+         ▼
+Store confirms on Odoo
+         │
+         ▼
+Store reviews Receipt in Odoo, finalizes qty_done
+         │
+         ▼
+DO status becomes Done on portal
+Vendor receives email (alerts if any qty differs)
 ```
 
 **Key points for stakeholders:**
-- The vendor only enters quantities and signs — they do not trigger any stock movement in Odoo
-- All stock validation decisions remain with the internal team in Odoo
-- The signed PDF serves as the vendor's formal delivery confirmation document
-- Once signed, the portal record is locked to preserve the integrity of the confirmation
+- Vendor ký xác nhận DO trên Portal trước khi giao hàng — PDF có chữ ký là chứng từ chính thức
+- Vendor cầm 2 bản DO (PDF đã ký) ra cửa hàng — cửa hàng ký physically cả 2 bản
+- Cửa hàng xác nhận trên Odoo sau khi nhận hàng và ký DO
+- Không có quy trình tự động khoá DO — vendor chủ động ký khi sẵn sàng giao
+- No email is sent when vendor signs — the signed PDF is the vendor's own document to bring to the store
 
 ---
 
@@ -333,6 +339,33 @@ It is equally important for stakeholders to understand the boundaries of the por
 - **Does not modify Odoo's base behaviour** — Odoo states and workflows remain unchanged
 - **Does not expose any Odoo credentials to vendors** — vendors have no access to Odoo, directly or indirectly
 - **Does not allow vendors to see other vendors' data** — enforced at every layer of the system
+
+---
+
+### 8. Data Sync between Portal and Odoo (⚠️ Pending IT Confirmation)
+
+> **Lưu ý:** Section này tập hợp tất cả các điểm liên quan đến việc đồng bộ dữ liệu giữa Portal và Odoo. Cần hỏi lại IT team để xác nhận cơ chế và thời điểm sync trước khi implement.
+
+**Các điểm cần xác nhận với IT:**
+
+| # | Chủ đề | Mô tả hiện tại | Cần xác nhận |
+|---|---|---|---|
+| 1 | **Order Deadline / auto-cancel** | Specs giả định PO có Expected Arrival date, auto-cancel sau 7 ngày nếu vendor không action | Odoo 16 CE có trường Expected Arrival trên `purchase.order` không? Trường nào? Cơ chế hết hạn RFQ hoạt động ra sao? |
+| 2 | **Vendor profile sync** | Sync job chạy mỗi 6h, đọc `res.partner` từ Odoo → tạo/cập nhật `vendor_users` trên Portal | Tần suất sync? Real-time hay batch? |
+| 3 | **PO data sync** | Portal đọc PO trực tiếp từ Odoo qua XML-RPC mỗi khi vendor truy cập | Cache strategy? Có cần sync PO về Portal DB không? |
+| 4 | **PO confirmation → Odoo** | Portal gọi `button_confirm` trên `purchase.order` qua XML-RPC | Có cần thêm validation nào phía Odoo không? |
+| 5 | **PO rejection → Odoo** | Portal gọi `button_cancel` trên `purchase.order` qua XML-RPC | `button_cancel` có hoạt động trên Odoo 16 CE cho PO ở state `sent` không? |
+| 6 | **DO data** | DO auto-created trên Portal khi PO confirmed. Ref number theo PO | Portal tự tạo DO hay Odoo tạo picking rồi Portal đọc? |
+| 7 | **DO sign → Odoo** | Sau khi vendor ký DO, delivery date + set quantities push về Odoo Receipt | Push bằng XML-RPC write vào `stock.picking` / `stock.move.line`? Trường nào? |
+| 8 | **Receipt validation (Odoo → Portal)** | Store confirms Receipt trên Odoo → Portal cần biết để cập nhật DO status = Done | Webhook, polling, hay nightly sync? Cần lightweight Odoo module không? |
+| 9 | **Receipt PDF** | Portal fetch delivery slip PDF từ Odoo HTTP session | Có cần lưu PDF trên Odoo hay chỉ Portal? |
+| 10 | **Vendor deactivation** | Khi vendor bị deactivate trên Odoo → sync job set `is_active = FALSE` trên Portal | Có cần deactivate ngay lập tức hay chờ sync cycle? |
+
+**Cơ chế sync hiện tại (draft — chờ IT xác nhận):**
+- **Odoo → Portal:** Scheduled job (mỗi 6h) cho vendor profiles; XML-RPC read-on-demand cho PO/Receipt
+- **Portal → Odoo:** XML-RPC write cho PO confirm (`button_confirm`), reject (`button_cancel`), DO push (delivery date + quantities)
+- **Odoo → Portal (receipt validation):** TBD — webhook vs polling vs nightly batch
+- **PDF fetch:** HTTP session riêng (không dùng XML-RPC) để tải delivery slip từ Odoo
 
 ---
 
