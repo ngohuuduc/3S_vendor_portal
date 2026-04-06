@@ -202,21 +202,9 @@ Draft RFQs are not shown. Vendors can view PO data for **24 months** from creati
 **Confirming a Sent RFQ:**
 - A "Confirm PO" button is shown on Waiting PO detail pages
 - Vendor clicks "Confirm PO" → portal calls `button_confirm` on `purchase.order` via XML-RPC using the service account
-- Odoo updates the PO state from `sent` to `purchase` and generates the linked Receipt
-- The portal auto-creates a DO for this PO and reflects the new Confirmed status immediately
-- Once confirmed, the button is no longer shown — the PO-level record is now read-only
-
-**Rejecting a Sent RFQ:**
-- A "Reject" button is shown alongside the "Confirm PO" button on Waiting PO detail pages
-- Vendor clicks "Reject" → portal calls `button_cancel` on `purchase.order` via XML-RPC
-- Odoo updates the PO state from `sent` to `cancel`
-- Portal sends an email notification to the PO creator (the store staff who made the RFQ) informing them the RFQ was rejected
-- The store must create a new RFQ if they wish to re-order — rejection is final
-
-**Auto-cancellation:**
-- If a vendor does not confirm or reject a Waiting PO within **7 days past the Expected Arrival date** (`date_planned`), the portal automatically cancels it by calling `button_cancel` on `purchase.order` in Odoo
-- A scheduled job checks daily for expired Waiting POs and cancels them
-- Email notification sent to **both vendor and PO creator (store)** when a PO is auto-cancelled
+- Odoo updates the PO state from `sent` to `purchase` and generates the linked Delivery Order / Receipt
+- The portal reflects the new `purchase` state immediately after the call succeeds
+- Once confirmed, the button is no longer shown — the record is now read-only on the PO level
 
 **Searching and filtering:**
 - Vendor can search by PO number (e.g. typing "PO004" filters the list instantly)
@@ -229,17 +217,48 @@ Draft RFQs are not shown. Vendors can view PO data for **24 months** from creati
 
 ### 3. Delivery Order & Delivery Workflow
 
-This is the core business process of the portal. It replaces the need for vendors to call or email to confirm delivery quantities. The portal separates the **Delivery Order (DO)** — what the vendor plans to deliver — from the **Receipt** — what the store actually receives in Odoo.
+This is the core business process of the portal. It replaces the need for vendors to call or email to confirm delivery quantities.
 
-> Xem [Business Overview](PROCESS_FLOW.md#business-overview-simple-view) trong PROCESS_FLOW.md để có sơ đồ toàn bộ flow từ RFQ đến Done.
+```
+Purchase Order confirmed in Odoo
+         │
+         ▼
+Vendor logs into portal
+         │
+         ▼
+Vendor opens the linked Receipt (status: Ready)
+         │
+         ▼
+Vendor enters actual delivered quantity for each product line
+(can save and come back multiple times — nothing is final yet)
+         │
+         ▼
+Vendor clicks "Sign & Confirm"
+         │
+         ▼
+Vendor draws their digital signature on screen
+         │
+         ▼
+Portal generates a signed PDF (Odoo delivery slip + confirmation page with signature)
+Receipt is locked — no further edits possible from the portal
+         │
+         ├──▶ Vendor receives confirmation email with PDF attached
+         │
+         └──▶ Internal team receives alert email with vendor name, PO ref, link to Odoo
+                         │
+                         ▼
+              Internal team reviews quantities in Odoo
+                         │
+                         ▼
+              Admin validates (or adjusts) the receipt in Odoo
+              Admin decides on backorder if quantities are short
+```
 
 **Key points for stakeholders:**
-- The vendor edits the DO and signs — they do not trigger any stock movement in Odoo
-- The DO pushes **set quantities** (pre-filled) to the Odoo Receipt, but these are not `qty_done` until the store confirms
-- All stock validation decisions remain with the store in Odoo — the store can adjust quantities before confirming
-- The signed DO PDF is the vendor's formal delivery document — they print it and bring it to the store
-- When store confirms receipt, DO becomes Done and shows final received amounts alongside vendor's delivery amounts
-- If quantities differ, the vendor is alerted in the notification email — they can log in to view details and export data
+- The vendor only enters quantities and signs — they do not trigger any stock movement in Odoo
+- All stock validation decisions remain with the internal team in Odoo
+- The signed PDF serves as the vendor's formal delivery confirmation document
+- Once signed, the portal record is locked to preserve the integrity of the confirmation
 
 ---
 
@@ -314,65 +333,6 @@ It is equally important for stakeholders to understand the boundaries of the por
 - **Does not modify Odoo's base behaviour** — Odoo states and workflows remain unchanged
 - **Does not expose any Odoo credentials to vendors** — vendors have no access to Odoo, directly or indirectly
 - **Does not allow vendors to see other vendors' data** — enforced at every layer of the system
-- **Does not give stores access to the portal** — stores only interact through Odoo
-
----
-
-### 8. Returns: RPO & Return Note (Bien Ban Tra Hang)
-
-The portal supports a returns workflow. When a store needs to return goods to a vendor, the process is handled through a **Return Purchase Order (RPO)** and a **Return Note (RN / Bien Ban Tra Hang)**.
-
-**Returns workflow:**
-1. Store creates a Return Purchase Order (RPO) in Odoo and clicks "Send by Email" — Odoo sends email to vendor asking them to log into the portal to confirm (same flow as PO/RFQ)
-2. RPO appears on the vendor portal — vendor can see the products and quantities being returned
-3. Vendor sets a **pickup date** (single date for entire RN) — this is when they will come to collect the returned goods
-4. Vendor clicks **"Confirm & Sign"** — confirms the RPO and signs the RN digitally. **Vendor cannot reject or cancel an RPO**
-5. RN PDF is generated — vendor prints it (2 copies) before going to the store
-6. Vendor goes to the store on the pickup date to collect the returned goods, bringing the printed RN
-7. Both parties sign the 2 paper copies — each keeps 1
-8. Store confirms the return receipt in Odoo
-9. RN status becomes Done on the portal
-
-**Key differences from PO/DO flow:**
-- Vendor **cannot change quantities** — only the pickup date
-- Vendor **cannot reject** an RPO — they can only confirm and set a pickup date
-- No auto-cancel rule for RPOs (unlike POs which auto-cancel after 7 days)
-
-**RPO Statuses (portal):** Waiting, Confirmed — no Cancelled status for RPOs
-
-**RN Statuses (portal):** Draft, Signed, Done — same lifecycle as DO (except no Cancelled)
-
-**Visibility:** Returns are shown alongside regular POs in the vendor's portal, clearly labelled as returns. Vendors can filter to view only returns or only regular POs.
-
-**Export:** Return data is included in the vendor's PDF/CSV export for reconciliation.
-
----
-
-### 9. Data Export
-
-Vendors can export delivery and receipt data for end-of-period invoicing and reconciliation.
-
-**Export formats:**
-- **PDF** — formatted report suitable for printing and archival. Two modes:
-  - **Individual**: export a single PO/DO or RPO/RN as a standalone PDF
-  - **Summary**: export a table of all selected POs/DOs in a date range as one PDF
-- **CSV** — machine-readable format for vendor to edit and import into their own systems
-
-**Export scope (all included):**
-- PO number
-- DO quantities (what vendor delivered)
-- Receipt quantities (what store confirmed)
-- Delivery date
-- Receipt confirmation date
-- Date range filter available (e.g., "export all data from March 2026")
-
-**Export UI (no separate export page — integrated into existing pages):**
-- **Dashboard**: checkbox selection on PO/RPO rows → "Export" button with format picker (PDF summary / CSV)
-- **PO/DO detail page**: "Export" button for individual record (PDF individual / CSV)
-- **Returns list**: same checkbox + export pattern as dashboard
-- Bulk export generates a single file containing all selected records
-
-**Export includes both regular POs/DOs and returns (RPO/RN).**
 
 ---
 
