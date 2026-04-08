@@ -67,22 +67,20 @@ flowchart TD
     end
 
     subgraph DO["Delivery Order — Vendor Portal"]
-        C1["Odoo tự động tạo 1 DO (stock.picking)\nkhi PO được xác nhận\nPortal đọc và đồng bộ"] --> C2["Nhà cung cấp chỉnh sửa DO trên portal\nNgày giao hàng duy nhất + số lượng\nQty không được vượt qty đặt hàng\nSố lượng giao luôn tính theo UoM gốc"]
-        C2 --> C3["Nhà cung cấp nhấp Ký DO\nVẽ chữ ký điện tử\nGhi chú tuỳ chọn"]
-        C3 --> C4["Trạng thái DO: Signed\nBị khoá — không thể chỉnh sửa thêm"]
-        C4 --> C5["Nhà cung cấp tải xuống DO PDF đã ký\nIn 2 bản"]
+        C1["Odoo tự tạo 1 DO (stock.picking)\nkhi PO confirmed\nPortal đọc, pre-fill qty"] --> C2["Nhà cung cấp sửa DO: ngày giao + qty\nKý & in nhiều lần (PDF on-the-fly)\nDO vẫn ở Draft — chưa khoá"]
+        C2 --> C3["23:00 đêm trước ngày giao\nDO tự động → Locked\nPush qty lên Odoo Receipt"]
+        C3 --> C5["Nhà cung cấp in DO PDF phiên bản cuối\nIn 2 bản"]
     end
 
     subgraph DELIVERY["Giao Hàng Thực Tế — Cửa Hàng"]
-        D1["Nhà cung cấp mang 2 bản DO in\nđến cửa hàng cùng với hàng hoá"] --> D2["Cửa hàng nhận hàng\nKiểm tra số lượng"]
+        D1["Nhà cung cấp mang 2 bản DO in\nđến cửa hàng cùng với hàng hoá"] --> D2["Cửa hàng nhận hàng\nKiểm tra số lượng\n(qty đã pre-fill từ DO)"]
         D2 --> D3["Cả hai bên ký tay\n2 bản giấy DO\nMỗi bên giữ 1 bản"]
-        D3 --> D4["Cửa hàng xác nhận trên Odoo"]
+        D3 --> D4["Cửa hàng xác nhận trên Odoo\n(có thể điều chỉnh qty nếu hàng hư)"]
     end
 
     subgraph STORE_CONFIRM["Xác Nhận Biên Nhận — Odoo"]
-        E1["Cửa hàng xem xét Receipt trong Odoo\nCó thể điều chỉnh số lượng đã nhập"] --> E2["Cửa hàng xác nhận Receipt\nqty_done được finalize"]
-        E2 --> E3["Portal được thông báo\nTrạng thái DO chuyển sang Done"]
-        E3 --> E4["Email đến nhà cung cấp\nXác nhận biên nhận\nCảnh báo nếu qty chênh lệch"]
+        E1["Cửa hàng xác nhận Receipt\nqty_done finalized\nstock move được tạo"] --> E2["Nightly sync 23:00\nPortal cập nhật DO → Done"]
+        E2 --> E3["Email đến nhà cung cấp\nXác nhận biên nhận\nCảnh báo nếu qty chênh lệch"]
     end
 
     subgraph UNLOCK["Ngoại Lệ: Mở Khoá DO"]
@@ -243,11 +241,13 @@ Portal và Odoo duy trì **nhãn trạng thái khác nhau**. Hành vi gốc củ
 stateDiagram-v2
     [*] --> Draft : PO được xác nhận,\nOdoo tự động tạo DO
 
-    Draft --> Signed : Nhà cung cấp chỉnh sửa qty + ngày,\nký điện tử
+    Draft --> Locked : 23:00 cutoff đêm trước ngày giao\nPush scheduled_date + quantity_done lên Odoo
 
-    Signed --> Draft : Portal Admin mở khoá\n(nhà cung cấp được thông báo qua email)
+    Locked --> Draft : Portal Admin mở khoá\n(nhà cung cấp được thông báo qua email)
 
-    Signed --> Done : Cửa hàng xác nhận biên nhận\ntrong Odoo
+    Locked --> Done : Nightly sync phát hiện\ncửa hàng đã xác nhận Receipt
+
+    Draft --> Done : Nightly sync phát hiện\nReceipt đã confirm\n(vendor chưa dùng portal)
 
     Done --> [*]
 
@@ -256,17 +256,17 @@ stateDiagram-v2
     Cancelled --> [*]
 
     note right of Draft
-        Nhà cung cấp: có thể chỉnh sửa ngày giao hàng duy nhất + số lượng
-        Số lượng phải <= qty đặt hàng
-        UoM kế thừa từ PO — không thể thay đổi
-        Portal: có thể chỉnh sửa
+        Nhà cung cấp: sửa ngày giao + qty, ký, in — tự do
+        Ký = tạo PDF on-the-fly (không khoá, không push)
+        Có thể sửa/ký/in nhiều lần nhiều phiên bản
+        Qty phải <= qty đặt hàng, UoM không đổi
     end note
 
-    note right of Signed
-        Nhà cung cấp: chỉ đọc, có thể in DO PDF
-        Portal: bị khoá, đã đẩy lên Odoo
-        Odoo Receipt: số lượng đã điền
-        Không gửi email
+    note right of Locked
+        23:00 cutoff: tự động khoá + push Odoo
+        Nhà cung cấp: chỉ đọc, in PDF phiên bản cuối
+        Odoo Receipt: quantity_done đã pre-fill
+        Cửa hàng có thể điều chỉnh trước khi confirm
     end note
 
     note right of Done
@@ -289,21 +289,21 @@ stateDiagram-v2
 stateDiagram-v2
     [*] --> Draft : RPO được cửa hàng tạo,\nRN được tạo tự động
 
-    Draft --> Signed : Nhà cung cấp đặt ngày lấy hàng,\nXác nhận & Ký (một bước)
+    Draft --> Locked : 23:00 cutoff đêm trước ngày lấy hàng\n(cùng cơ chế với DO)
 
-    Signed --> Done : Cửa hàng xác nhận biên nhận\ntrả hàng trong Odoo
+    Locked --> Done : Nightly sync phát hiện\ncửa hàng xác nhận return receipt
 
     Done --> [*]
 
     note right of Draft
-        Nhà cung cấp: chỉ có thể đặt ngày lấy hàng
-        Không thể thay đổi số lượng
-        Không thể từ chối
+        Nhà cung cấp: đặt ngày lấy hàng, ký, in — tự do
+        Không thể thay đổi số lượng, không thể từ chối
+        Ký = tạo PDF on-the-fly (không khoá)
     end note
 
-    note right of Signed
-        Nhà cung cấp: chỉ đọc, có thể in RN PDF
-        Portal: bị khoá
+    note right of Locked
+        23:00 cutoff: tự động khoá
+        Nhà cung cấp: chỉ đọc, in RN PDF phiên bản cuối
     end note
 
     note right of Done
