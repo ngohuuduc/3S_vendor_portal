@@ -135,7 +135,7 @@ Phần này mô tả hành vi của portal theo ngôn ngữ nghiệp vụ, dành
 
 **Nếu vendor bỏ lỡ cửa sổ 24h:** họ dùng tùy chọn "Quên mật khẩu" trên trang đăng nhập, nhập Vendor ID và nhận được link đặt lại mới.
 
-**Nếu vendor không có email trong Odoo:** job đồng bộ bỏ qua họ và ghi log trường hợp này. Đội nội bộ phải thêm email vào bản ghi partner Odoo — tài khoản sẽ được tạo vào chu kỳ đồng bộ tiếp theo.
+**Nếu vendor không có email trong Odoo:** job đồng bộ bỏ qua họ và ghi log trường hợp này. Đội nhà phải thêm email vào partner Odoo — tài khoản sẽ được tạo vào chu kỳ đồng bộ tiếp theo.
 
 **Cập nhật hồ sơ:** Nếu tên, số điện thoại, mã số thuế hoặc tên công ty của vendor thay đổi trong Odoo, portal phản ánh những thay đổi đó tự động vào lần đồng bộ tiếp theo. **Mật khẩu** của vendor chỉ được quản lý trên portal và không bao giờ bị ghi đè bởi sync. Vendor ID không bao giờ thay đổi — đây là `res.partner.id` cố định do Odoo cấp.
 
@@ -152,10 +152,15 @@ Phần này mô tả hành vi của portal theo ngôn ngữ nghiệp vụ, dành
 
 RFQ ở trạng thái Draft không được hiển thị. Vendor có thể xem dữ liệu PO trong **24 tháng** kể từ ngày tạo. PO cũ hơn sẽ bị xóa vĩnh viễn.
 
+==> **[DUC]** Hiện nay chỉ coi live trực tiếp từ Odoo và giới hạn 3 tháng thôi 
+
 **Bước 1 — Xác nhận ngày giao hàng:**
 - Trang chi tiết PO ở trạng thái Waiting hiển thị ngày mong muốn giao hàng từ cửa hàng (`date_planned`)
 - NCC có thể điều chỉnh ngày dự kiến giao — **không vượt quá 7 ngày** so với `date_planned`
 - NCC nhấp **"Xác Nhận Ngày Giao Hàng"** → portal push `vendor_date_planned` vào `purchase.order` trên Odoo
+
+**==> User không xác nhận ở bước này, chỉ là chọn ngày giao hàng - Viết sai dễ hiểu sai vấn đề.**
+
 
 **Bước 2 — Xác nhận đơn đặt hàng:**
 - Sau khi ngày giao đã xác nhận, hệ thống hiển thị nút **"Xác Nhận Đơn Đặt Hàng"**
