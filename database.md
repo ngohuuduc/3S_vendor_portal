@@ -64,11 +64,9 @@
 | `group_id` | INT64 | YES | FK — Nhóm mua hàng (dùng gom PO) |
 | `date_order` | DATETIME | YES | Ngày tạo / xác nhận đơn hàng |
 | `date_approve` | DATETIME | YES | Ngày duyệt đơn hàng |
-| `date_planned` | DATETIME | YES | Ngày dự kiến nhận hàng (tổng hợp từ các dòng) |
+| `date_planned` | DATETIME | YES | Ngày dự kiến nhận hàng — được NCC cập nhật khi xác nhận ngày giao trên portal (không quá 7 ngày sau giá trị gốc do cửa hàng đặt). Odoo dùng trường này làm `scheduled_date` khi tạo DO |
 | `date_planned_mps` | DATETIME | YES | Ngày dự kiến theo kế hoạch MPS |
 | `effective_date` | DATETIME | YES | Ngày hiệu lực thực tế của PO |
-| `vendor_date_planned` | DATETIME | YES | Ngày giao hàng do NCC cam kết |
-| `vendor_date_planned_tz` | STRING | YES | Timezone của `vendor_date_planned` |
 | `date_sent_rfq` | DATETIME | YES | Ngày gửi RFQ cho NCC |
 | `date_calendar_start` | DATETIME | YES | Ngày bắt đầu tính lịch giao hàng |
 | `amount_untaxed` | NUMERIC | YES | Tổng tiền trước thuế |
