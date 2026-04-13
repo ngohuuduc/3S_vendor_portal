@@ -356,12 +356,12 @@ stateDiagram-v2
 
 ---
 
-## Câu Hỏi Chờ Xác Nhận
+## Câu Hỏi Chờ Xác Nhận ==> đã xác nhận 
 
-| # | Chủ đề | Chi tiết |
-|---|---|---|
-| 1 | **Hai job 23:00 chạy cùng lúc** | Job cutoff (lock DO + push Odoo) và job nightly sync (check receipt confirmed → DO Done) đều chạy lúc 23:00. Nếu cửa hàng đã confirm receipt trước 23:00 mà DO vẫn Draft → thứ tự xử lý thế nào? DO đi Draft → Locked → Done hay Draft → Done? |
-| 2 | **RN có cần Unlock không?** | DO có cơ chế Unlock (admin mở khoá Locked → Draft). RN hiện không có. Nếu ngày nhận hàng sai sau 23:00 cutoff, có cách sửa không? |
+| # | Chủ đề | Chi tiết | Trả lời |
+|---|---|---|---|
+| 1 | **Hai job 23:00 chạy cùng lúc** | Job cutoff (lock DO + push Odoo) và job nightly sync (check receipt confirmed → DO Done) đều chạy lúc 23:00. Nếu cửa hàng đã confirm receipt trước 23:00 mà DO vẫn Draft → thứ tự xử lý thế nào? DO đi Draft → Locked → Done hay Draft → Done? |DO được cập nhật theo thời gian thực; sau 23PM trước ngày giao hàng dự kiến NCC chỉ có thể xem DO chứ không được chỉnh sửa (lock trên Portal); Confirmed và Validate (Ready--> Done ---> Draft) là hành động của phía của hàng trên Odoo: Không có Job Sync vì **theo thời gian thực** | 
+| 2 | **RN có cần Unlock không?** | DO có cơ chế Unlock (admin mở khoá Locked → Draft). RN hiện không có. Nếu ngày nhận hàng sai sau 23:00 cutoff, có cách sửa không? | Unlock xảy ra trên Odoo không xảy trên portal và hiện tại quy trình không phân định NCC được chỉnh sửa cái gì.  | 
 
 ---
 

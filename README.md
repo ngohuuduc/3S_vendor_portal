@@ -126,18 +126,20 @@ Phần này mô tả hành vi của portal theo ngôn ngữ nghiệp vụ, dành
 
 **Những gì xảy ra tự động:**
 1. Job đồng bộ portal chạy mỗi 6 giờ và phát hiện vendor mới trong Odoo
-2. Một tài khoản portal được tạo, liên kết với Odoo ID của vendor
-3. Vendor nhận được **Email Chào Mừng** (mặc định bằng tiếng Việt) bao gồm:
+2. Một tài khoản portal được tạo, liên kết với Odoo ID của vendor.
+3. Quản trị viên cần Kích Hoạt Tài khoản của nhà cung cấp từ portal. 
+4. Nhà Cung cấp nhận được **Email Chào Mừng** (mặc định bằng tiếng Việt) bao gồm:
    - **Vendor ID** (`res.partner.id`) — số nguyên dùng để đăng nhập
    - Một **link đặt mật khẩu** có hiệu lực trong 24 giờ
-4. Vendor nhấp vào link, đặt mật khẩu của mình, và tài khoản trở nên hoạt động
-5. Từ thời điểm này, vendor có thể đăng nhập bất kỳ lúc nào bằng Vendor ID và mật khẩu
+5. Nhà cung cấp nhấp vào link, đặt mật khẩu của mình, và tài khoản trở nên hoạt động
+6. Từ thời điểm này, vendor có thể đăng nhập bất kỳ lúc nào bằng ID và mật khẩu
 
 **Nếu vendor bỏ lỡ cửa sổ 24h:** họ dùng tùy chọn "Quên mật khẩu" trên trang đăng nhập, nhập Vendor ID và nhận được link đặt lại mới.
 
 **Nếu vendor không có email trong Odoo:** job đồng bộ bỏ qua họ và ghi log trường hợp này. Đội nhà phải thêm email vào partner Odoo — tài khoản sẽ được tạo vào chu kỳ đồng bộ tiếp theo.
 
 **Cập nhật hồ sơ:** Nếu tên, số điện thoại, mã số thuế hoặc tên công ty của vendor thay đổi trong Odoo, portal phản ánh những thay đổi đó tự động vào lần đồng bộ tiếp theo. **Mật khẩu** của vendor chỉ được quản lý trên portal và không bao giờ bị ghi đè bởi sync. Vendor ID không bao giờ thay đổi — đây là `res.partner.id` cố định do Odoo cấp.
+
 
 ---
 
@@ -146,27 +148,27 @@ Phần này mô tả hành vi của portal theo ngôn ngữ nghiệp vụ, dành
 **Ai xem được gì:** Mỗi vendor chỉ thấy Purchase Order của chính mình. Về mặt kỹ thuật, vendor không thể xem dữ liệu của vendor khác.
 
 **Những PO nào được hiển thị (trạng thái portal):**
-- **Waiting** — RFQ đã được gửi cho vendor và đang chờ xác nhận. Vendor có thể xác nhận hoặc từ chối.
-- **Confirmed** — PO đã được duyệt, DO đã được tạo. Vendor có thể chỉnh sửa DO và in PDF.
+- **Waiting/Chờ xác nhận** — RFQ đã được gửi cho vendor và đang chờ xác nhận. Vendor có thể xác nhận hoặc từ chối.
+- **Confirmed/Đã xác nhận** — PO đã được duyệt, DO đã được tạo, Vendor có thể in PDF 
 - **Canceled** — PO đã bị hủy (vendor từ chối, hoặc cửa hàng hủy). Chỉ đọc.
 
-RFQ ở trạng thái Draft không được hiển thị. Vendor có thể xem dữ liệu PO trong **24 tháng** kể từ ngày tạo. PO cũ hơn sẽ bị xóa vĩnh viễn.
+RFQ ở trạng thái Draft không được hiển thị. Vendor có thể xem dữ liệu PO trong **3 tháng** gần nhất.
 
 **Xác nhận đơn đặt hàng:**
 - Trang chi tiết PO ở trạng thái Waiting hiển thị ngày mong muốn giao hàng từ cửa hàng (`date_planned`)
 - NCC chọn ngày dự kiến giao (không quá 7 ngày sau `date_planned` của cửa hàng)
 - NCC nhấp **"Xác Nhận Đơn Đặt Hàng"** → portal cập nhật `date_planned` trên `purchase.order` + gọi `button_confirm` cùng lúc → Odoo tạo DO tự động (`stock.picking`) với `scheduled_date` = `date_planned`
-- Sau khi xác nhận, PO chỉ đọc, hiển thị link đến DO
+- Sau khi xác nhận, PO chỉ đọc, hiển thị link đến DO và cần phải liên hệ nhân viên mua hàng để được cập nhật PO sau khi xác nhận.
 
 **Từ chối đơn đặt hàng:**
 - Nút "Từ Chối" hiển thị cùng trang chi tiết PO ở trạng thái Waiting
 - NCC nhấp "Từ Chối" → **popup yêu cầu điền lý do từ chối**
 - NCC điền lý do và nhấp "Xác nhận" → portal push cancel về Odoo + **log lý do**
 - Portal gửi email thông báo đến PO creator kèm lý do từ chối
-- Từ chối là cuối cùng — cửa hàng phải tạo RFQ mới nếu muốn đặt hàng lại
+- Từ chối là cuối cùng — cửa hàng phải tạo RFQ mới nếu muốn đặt hàng lại. 
 
 **Tự động hủy:**
-- Nếu vendor không xác nhận hoặc từ chối PO ở trạng thái Waiting trong vòng **7 ngày kể từ Expected Arrival date** (`date_planned` trên `purchase.order`), portal tự động hủy trong Odoo
+- Nếu vendor không xác nhận hoặc từ chối PO ở trạng thái Waiting trong vòng **7 ngày kể từ Expected Arrival date** (`date_planned` trên `purchase.order`), portal tự động hủy trong Odoo. 
 - Một scheduled job kiểm tra hằng ngày các PO Waiting quá hạn
 - Email thông báo gửi đến **cả vendor lẫn PO creator** khi PO bị tự động hủy
 
@@ -248,23 +250,23 @@ flowchart TB
 
 #### 3.3 23:00 Cutoff — Khoá DO & Push Odoo
 
-- Lúc **23:00 đêm trước ngày giao dự kiến**: DO bị khoá. Job push `quantity_done` vào `stock.move.line` trên Odoo để pre-fill cho store. `scheduled_date` không cần push — Odoo đã tự set khi tạo DO. Vendor không thể chỉnh sửa sau thời điểm này.
-- Ngày giao cố định từ PO — NCC đã chọn khi xác nhận PO và không thể đổi trên DO
-- DO bị khoá — vendor không thể chỉnh sửa nhưng vẫn có thể in PDF phiên bản cuối
+- Lúc **23:00 đêm trước ngày giao dự kiến**: DO bị khóa trên giao diện web, các thông tin đã được cập nhật theo thời gian thực trước 23PM . Vendor không thể chỉnh sửa sau thời điểm này.
+- Ngày giao cố định từ PO — NCC đã chọn khi xác nhận PO và không thể đổi trên DO.
+- DO bị khoá — vendor không thể chỉnh sửa nhưng vẫn có thể in PDF.
 
 #### 3.4 Giao hàng thực tế
 
 - Vendor in 2 bản PDF DO (phiên bản cuối cùng sau khi Locked)
-- Vendor mang hàng + 2 bản DO đến cửa hàng
-- Cả hai bên ký tay 2 bản paper — mỗi bên giữ 1 bản làm chứng từ
+- (ngoài hệ thống) Vendor mang hàng + 2 bản DO đến cửa hàng
+- (ngoài hệ thống) Cả hai bên ký tay 2 bản paper — mỗi bên giữ 1 bản làm chứng từ
 
 #### 3.5 Receipt Confirmation — Xác nhận nhận hàng
 
 - Cửa hàng xem Receipt trong Odoo — qty đã được pre-fill từ DO (có thể điều chỉnh nếu hàng hư hỏng)
 - Cửa hàng xác nhận Receipt → qty_done finalized, stock move được tạo trên Odoo
-- Nightly sync 23:00 → portal cập nhật DO status → **Done**, lưu qty thực nhận
-- Email tự động gửi Vendor xác nhận — nếu qty nhận khác với DO sẽ có cảnh báo chi tiết
-- **Trường hợp vendor chưa dùng portal** (DO vẫn Draft): portal tự động chuyển DO → Done khi phát hiện Receipt đã confirm
+- ~~Nightly sync 23:00 → portal cập nhật DO status → **Done**, lưu qty thực nhận~~ Bước trên. 
+- Email tự động gửi Vendor xác nhận — nếu qty nhận khác với DO sẽ có cảnh báo chi tiết. 
+- ~~**Trường hợp vendor chưa dùng portal** (DO vẫn Draft): portal tự động chuyển DO → Done khi phát hiện Receipt đã confirm~~ Ngoài phạm vi hệ thống.   
 
 > Sơ đồ toàn bộ flow (bao gồm Returns, Unlock DO) xem tại [PROCESS_FLOW.md](PROCESS_FLOW.md).
 
@@ -300,8 +302,8 @@ flowchart TB
 **23:00 Cutoff — tại sao khoá DO:**
 Lúc 23:00 đêm trước ngày giao hàng (`scheduled_date`), DO bị khoá tự động. Mục đích:
 1. Xác định số lượng cuối cùng vendor sẽ giao
-2. Push `quantity_done` vào `stock.move.line` trên Odoo để pre-fill cho store — cửa hàng không phải nhập liệu thủ công
-3. Cửa hàng vẫn có thể điều chỉnh qty trên Odoo trước khi confirm (ví dụ: hàng hư hỏng)
+2. ~~Push `quantity_done` vào `stock.move.line` trên Odoo để pre-fill cho store — cửa hàng không phải nhập liệu thủ công~~ Được cập nhật theo thời gian thực 
+3. Cửa hàng vẫn có thể điều chỉnh qty trên Purchase Order của odoo trước khi confirm (ví dụ: hàng hư hỏng). 
 
 **Ý nghĩa thực tế của "Locked":**
 - Tất cả các trường số lượng trên DO đều chỉ đọc trong portal
