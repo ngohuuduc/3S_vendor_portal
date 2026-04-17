@@ -63,9 +63,9 @@ flowchart TD
         B7 --> B7A["NCC điền lý do và nhấp 'Xác nhận'\nPortal log lý do từ chối"]
         B7A --> B8["Portal gọi button_cancel\ntrên purchase.order qua XML-RPC"]
         B8 --> B9["RFQ bị hủy trong Odoo\nstate: sent → cancel"]
-        B9 --> B10["Email đến PO creator\nRFQ bị từ chối + lý do"]
+        B9 --> B10["Email đến Buyer\n(purchase.order.user_id)\nRFQ bị từ chối + lý do"]
         B3 -- Không hành động / 7 ngày sau date_planned --> B3X["Portal tự động hủy\nbutton_cancel qua XML-RPC"]
-        B3X --> B3Y["Email đến NCC + PO creator\nPO tự động hủy — không phản hồi"]
+        B3X --> B3Y["Email đến NCC + Buyer\n(purchase.order.user_id)\nPO tự động hủy — không phản hồi"]
     end
 
     subgraph DO["Delivery Order — Vendor Portal"]
@@ -93,12 +93,13 @@ flowchart TD
     end
 
     subgraph RETURNS["Quy Trình Trả Hàng"]
-        R1(["Cửa hàng tạo RPO trong Odoo\nEmail gửi cho nhà cung cấp"]) --> R2["RPO xuất hiện trên portal\nNhà cung cấp thấy các mặt hàng trả\n(không cần bấm Xác Nhận RPO)"]
+        R1(["Cửa hàng tạo RPO trong Odoo\nEmail gửi cho nhà cung cấp"]) --> R2["RPO xuất hiện trên portal\nqty giao pre-fill = qty đặt\n(không cần bấm Xác Nhận RPO)"]
         R2 --> R3["Nhà cung cấp chỉnh ngày nhận hàng\nKhông thể từ chối hoặc thay đổi qty"]
-        R3 --> R4["Nhà cung cấp in RN PDF"]
+        R3 --> R4["Nhà cung cấp in RN PDF\nBanner: 'NCC vui lòng đến lấy hàng\ntrước hạn chót (ngày trả + 7 ngày)'"]
         R4 --> R5["Nhà cung cấp đến cửa hàng\nđể lấy hàng trả về\nCả hai ký 2 bản giấy"]
-        R5 --> R6["Cửa hàng xác nhận biên nhận trả hàng\ntrong Odoo"]
-        R6 --> R7[Trạng thái RN: Done]
+        R5 --> R6{"Cửa hàng\nxác nhận Odoo?"}
+        R6 -- Có --> R7[Trạng thái RN: Done]
+        R6 -- "Quá hạn chót\n(ngày trả + 7 ngày dương lịch)" --> R8["Odoo tự xác nhận\n(scheduled action Odoo\n— TBD Odoo team)\n→ portal sync state done"]
     end
 
     %% Kết nối các giai đoạn chính
@@ -191,8 +192,8 @@ sequenceDiagram
 |---|---|---|---|
 | Tài khoản vendor mới được tạo (job đồng bộ) | Nhà cung cấp | Tiếng Việt (mặc định) | Vendor ID (số nguyên) + link đặt mật khẩu (hết hạn sau 24h) |
 | Yêu cầu đặt lại mật khẩu | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Link đặt lại (hết hạn sau 24h) |
-| RFQ bị từ chối bởi nhà cung cấp | PO creator (nhân viên cửa hàng) | Tiếng Việt | Mã RFQ, tên nhà cung cấp |
-| PO tự động hủy (7 ngày sau Expected Arrival) | Nhà cung cấp + PO creator | Ngôn ngữ ưa thích / Tiếng Việt | PO tự động hủy — không phản hồi trong 7 ngày |
+| RFQ bị từ chối bởi nhà cung cấp | **Buyer** (`purchase.order.user_id`) | Tiếng Việt | Mã RFQ, tên nhà cung cấp |
+| PO tự động hủy (7 ngày sau Expected Arrival) | Nhà cung cấp + **Buyer** | Ngôn ngữ ưa thích / Tiếng Việt | PO tự động hủy — không phản hồi trong 7 ngày |
 | DO được in bởi nhà cung cấp | — | — | Không gửi email khi in |
 | Biên nhận được cửa hàng xác nhận (qty khớp) | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Xác nhận kèm số PO, mã biên nhận |
 | Biên nhận được cửa hàng xác nhận (qty chênh lệch) | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Cảnh báo kèm chi tiết chênh lệch |
@@ -292,11 +293,11 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Draft : RPO được cửa hàng tạo,\nRN được tạo tự động
+    [*] --> Draft : RPO được cửa hàng tạo,\nRN tạo tự động\nqty giao mặc định = qty đặt
 
-    Draft --> Locked : 23:00 cutoff đêm trước ngày lấy hàng\n(cùng cơ chế với DO)
+    Draft --> Done : Cửa hàng xác nhận return receipt\ntrên Odoo (trước hạn chót)
 
-    Locked --> Done : Nightly sync phát hiện\ncửa hàng xác nhận return receipt
+    Draft --> Done : Quá hạn chót (ngày trả + 7 ngày dương lịch)\n→ Odoo tự xác nhận (scheduled action Odoo — TBD)\n→ portal đọc state done
 
     Done --> [*]
 
@@ -304,16 +305,18 @@ stateDiagram-v2
         Nhà cung cấp: chỉnh ngày nhận hàng, in PDF — tự do
         Không thể thay đổi số lượng, không thể từ chối
         Không cần bấm Xác Nhận RPO
-        In = tạo PDF on-the-fly (không khoá)
-    end note
-
-    note right of Locked
-        23:00 cutoff: tự động khoá
-        Nhà cung cấp: chỉ đọc, in RN PDF phiên bản cuối
+        Banner: "NCC vui lòng đến lấy hàng
+        trước hạn chót (dd/mm/yyyy)"
+        Hạn chót = ngày trả dự kiến + 7 ngày
+        (KHÔNG dùng cơ chế 23:00 cutoff như DO)
     end note
 
     note right of Done
-        Trả hàng hoàn tất
+        Trả hàng hoàn tất — có thể do:
+        (a) cửa hàng xác nhận trên Odoo, hoặc
+        (b) Odoo tự xác nhận sau hạn chót
+            (scheduled action phía Odoo;
+             portal chỉ đọc state)
         Có thể xuất PDF/CSV
     end note
 ```
@@ -326,8 +329,11 @@ stateDiagram-v2
 |---|---|---|
 | Đơn hàng | PO (Purchase Order) | RPO (Return Purchase Order) |
 | Chứng từ giao nhận | DO (Delivery Order) | RN (Return Note / Biên Bản Trả Hàng) |
-| Nhà cung cấp có thể chỉnh sửa | Số lượng (đúng decimal UoM). Ngày giao cố định từ PO | Chỉ ngày nhận hàng (không thay đổi qty hay UoM) |
+| Nhà cung cấp có thể chỉnh sửa | Số lượng giao (chỉ giảm, không tăng vượt qty đặt; đúng decimal UoM: kg/lít/mét → 2 chữ số thập phân, còn lại (gram, thùng, chai, cái, hộp, units) → số nguyên). Ngày giao cố định từ PO | Chỉ ngày nhận hàng (không thay đổi qty hay UoM) |
+| Số lượng giao mặc định | = Số lượng đặt (pre-fill khi PO confirmed) | = Số lượng đặt (pre-fill khi RPO được tạo) |
 | Nhà cung cấp cần xác nhận | Có (bấm "Xác Nhận" PO) | Không (không cần bấm xác nhận RPO) |
+| Hạn chót / cơ chế khoá | 23:00 đêm trước `scheduled_date` → DO Locked, vendor chỉ đọc | Ngày trả hàng dự kiến + **7 ngày dương lịch** → **Odoo tự xác nhận trả hàng** (scheduled action Odoo, **TBD phía Odoo team**); portal chỉ đọc state `done` và reflect |
+| Banner/note hạn chót | "Phiếu giao nhận bị khoá lúc 23:00 ngày dd/mm/yyyy" | **"Nhà cung cấp vui lòng đến lấy hàng trước hạn chót (dd/mm/yyyy)"** |
 | Chữ ký điện tử | Không — chỉ in PDF | Không — chỉ in PDF |
 | PDF có thể in | Có (DO PDF, in nhiều lần) | Có (RN PDF, cùng định dạng) |
 | Trao đổi vật lý | Nhà cung cấp giao hàng đến cửa hàng | Nhà cung cấp lấy hàng từ cửa hàng |

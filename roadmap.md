@@ -277,7 +277,7 @@ vendor-portal/
 | `delivery_qty` | decimal | số lượng giao do vendor nhập (phải <= ordered_qty) |
 | `received_qty` | decimal | NULL cho đến khi cửa hàng xác nhận biên nhận; qty_done cuối cùng từ Odoo |
 
-**`return_notes`** (cùng cấu trúc với delivery_orders, dành cho trả hàng — 23:00 cutoff áp dụng)
+**`return_notes`** (cùng cấu trúc với delivery_orders, dành cho trả hàng — **KHÔNG dùng 23:00 cutoff**; hạn chót = `pickup_date` + 7 ngày, sau đó **Odoo tự xác nhận trả hàng** qua scheduled action phía Odoo, portal chỉ đọc và reflect)
 | Cột | Kiểu | Ghi chú |
 |---|---|---|
 | `id` | serial PK | ID RN nội bộ của portal |
@@ -285,7 +285,7 @@ vendor-portal/
 | `picking_id` | integer | Odoo `stock.picking.id` (outgoing shipment trả hàng) |
 | `vendor_id` | FK → vendor_users | vendor sở hữu RN này |
 | `pickup_date` | date | ngày vendor đặt để lấy hàng trả về |
-| `status` | varchar | `draft`, `locked`, hoặc `done` (không có cancelled — vendor không thể từ chối RPO) |
+| `status` | varchar | `draft` hoặc `done` (không có `locked` và không có `cancelled` — vendor không thể từ chối RPO). Portal derive `done` khi Odoo `stock.picking.state = done`, bất kể xác nhận do cửa hàng thao tác tay hay do Odoo tự động validate sau hạn chót (`pickup_date` + 7 ngày) |
 | `latest_signature` | text | base64 PNG chữ ký mới nhất (dùng để render PDF on-the-fly) |
 | `locked_at` | timestamp | NULL cho đến khi 23:00 cutoff |
 | `created_at` | timestamp | |
@@ -301,7 +301,7 @@ vendor-portal/
 | `product_barcode` | varchar | barcode sản phẩm được cache |
 | `product_name` | varchar | tên sản phẩm được cache |
 | `uom` | varchar | đơn vị tính từ dòng RPO |
-| `return_qty` | decimal | số lượng đang trả (chỉ đọc — do cửa hàng đặt, vendor không thể thay đổi) |
+| `return_qty` | decimal | số lượng đang trả (chỉ đọc — do cửa hàng đặt, vendor không thể thay đổi; pre-fill mặc định = số lượng đặt, đúng decimal UoM: kg/lít/mét → 2 chữ số thập phân, các UoM khác (gram, thùng, chai, cái, hộp, units) → số nguyên) |
 
 **`audit_log`**
 | Cột | Kiểu | Ghi chú |

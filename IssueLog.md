@@ -4,6 +4,35 @@ Ghi lại các vấn đề kiến trúc / thiết kế đang mở, chưa có quy
 
 ---
 
+## [OPEN] RN-AUTOCONFIRM-001 — Odoo tự xác nhận trả hàng sau hạn chót
+
+**Ngày mở:** 2026-04-18
+**Người mở:** trang.nat
+**Trạng thái:** OPEN — dependency phía Odoo team, chờ xác nhận
+
+### Bối cảnh
+
+Decision mới (2026-04-18): hạn chót của RN = `pickup_date` + 7 ngày dương lịch. Sau hạn chót, **Odoo tự xác nhận trả hàng** (validate `stock.picking` outgoing) và portal chỉ đọc state `done` từ Odoo để reflect lên UI. Portal KHÔNG đẩy validate lên Odoo.
+
+### Dependency cần Odoo team xác nhận
+
+1. **Scheduled action / cron** tự validate picking trả hàng khi `scheduled_date + 7 ngày <= now` — Odoo 16 CE standard không có sẵn chức năng này
+2. **Thời điểm chính xác chạy scheduled action** trong ngày (đầu ngày, cuối ngày, hay theo cron định kỳ?) — ảnh hưởng đến banner hiển thị ngày hạn chót
+3. **Side effect hàng tồn kho:** khi auto-validate, Odoo sẽ tạo stock move outgoing, trừ tồn kho cửa hàng. Cần xác nhận đây là behavior mong muốn (vs. chỉ đổi state không tạo move)
+4. **Cơ chế rollback:** nếu vendor thực tế đến lấy sau hạn chót, có reverse được không?
+
+### Các quyết định đã gắn với issue này
+
+- [README.md — dòng quyết định "Trả hàng"](../README.md)
+- [PROCESS_FLOW.md — RN state machine + comparison table](../PROCESS_FLOW.md)
+
+### Hành động kế tiếp
+
+- [ ] trang.nat raise với Odoo team về các điểm trên
+- [ ] Ghi lại câu trả lời vào issue này rồi đóng
+
+---
+
 ## [CLOSED] DO-LIVE-001 — Chuyển Delivery Order sang live query Odoo (bỏ local DB sync)
 
 **Ngày mở:** 2026-04-10  
