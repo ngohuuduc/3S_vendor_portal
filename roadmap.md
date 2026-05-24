@@ -527,15 +527,15 @@ Admin thấy cùng thanh điều hướng trên cùng với vendor, với các m
 - Không gọi `fetch` trực tiếp trong component — tất cả đều qua wrapper này
 
 ### Cách tiếp cận state management
-- **TanStack Query** cho tất cả server state — danh sách PO, chi tiết DO, hồ sơ
-- **React local state** (`useState`) cho form input, trạng thái chữ ký, toggle UI
+- **TanStack Query** cho tất cả server state — danh sách PO, chi tiết DO/RO, hồ sơ
+- **React local state** (`useState`) cho form input (SL Giao, ngày, ghi chú), dirty indicator cho nút Lưu, toggle UI
 - Không cần global state manager ở quy mô này
 
 ### Cách tiếp cận responsive design
 - Portal hoàn toàn responsive — hoạt động tốt trên cả desktop và mobile
 - Tailwind CSS utility classes cho layout (hoặc CSS framework tương đương)
-- Canvas signature pad tự điều chỉnh kích thước theo chiều rộng màn hình trên mobile
 - Bảng trên mobile thu gọn thành layout dạng card để dễ đọc
+- Log Note bảng dùng accordion / collapse trên mobile
 
 ### Tóm tắt dashboard Vendor
 Phía trên danh sách PO, dashboard vendor hiển thị các thẻ tóm tắt:
@@ -546,58 +546,64 @@ Phía trên danh sách PO, dashboard vendor hiển thị các thẻ tóm tắt:
 ### Giao diện tìm kiếm & lọc danh sách PO
 - Thanh tìm kiếm theo số PO (tìm kiếm một phần, debounced 300ms trước khi gọi API)
 - Bộ chọn khoảng ngày cho `date_from` và `date_to`
-- Badge trạng thái trên mỗi dòng PO (Chờ xác nhận / Đã xác nhận / Đã huỷ) với mã màu
-- Trạng thái DO hiển thị cạnh trạng thái PO (Draft / Signed / Done / Cancelled)
+- Badge trạng thái PO: Chờ xác nhận / Đã xác nhận / Đã huỷ (mã màu)
+- Cột "Phiếu Giao Hàng" hiển thị state DO song ngữ: **Mới (New) / Đã Gửi (Sent) / Đã Hoàn Thành (Done) / Đã Huỷ (Canceled)**
 - Điều khiển phân trang (trước / sau), page size cố định là 20
 
-### Chi tiết DO — các trường hiển thị cho mỗi dòng sản phẩm
-| Trường | Tiếng Việt | Nguồn |
-|---|---|---|
-| Số thứ tự | Số thứ tự | Số thứ tự dòng |
-| Barcode sản phẩm | Mã vạch | từ Odoo `product.product` → `barcode` |
-| Tên sản phẩm | Tên sản phẩm | `delivery_order_lines` → `product_name` |
-| UoM (chỉ đọc) | Đơn vị tính | `delivery_order_lines` → `uom` (kế thừa từ dòng PO, không thể thay đổi) |
-| Số lượng đặt hàng (chỉ đọc) | SL đặt hàng | `delivery_order_lines` → `ordered_qty` (từ dòng PO) |
-| Số lượng giao (có thể chỉnh sửa) | Số lượng giao | `delivery_order_lines` → `delivery_qty` (phải <= ordered_qty) |
-| Số lượng thực nhận (chỉ đọc) | Số lượng thực nhận | `delivery_order_lines` → `received_qty` (NULL cho đến khi cửa hàng xác nhận; hiển thị qty_done cuối cùng của cửa hàng) |
-| Đơn giá | Đơn giá | từ Odoo `purchase.order.line` → `price_unit` |
-| Thành tiền | Thành tiền | Tính toán: đơn giá x số lượng giao (chỉ frontend, không lưu) |
+### Chi tiết DO (Phiếu Giao Hàng) — các trường hiển thị cho mỗi dòng sản phẩm
+Tham chiếu chi tiết spec ở [README.md mục 8.3](README.md#83-do-form-view-phiếu-giao-hàng--ncc-giao). Tóm tắt:
+
+| Trường | Nguồn (live query Odoo, không lưu local) |
+|---|---|
+| Tên sản phẩm | `purchase.order.line.name` |
+| Mã NCC | `product.supplierinfo.product_code` |
+| Mã Vạch | `product.product.barcode` (đặt sau Mã NCC) |
+| Tên SP NCC | `product.supplierinfo.product_name` |
+| SL Đặt (read-only) | `purchase.order.line.product_qty` |
+| SL Giao (editable Mới, frozen Đã Gửi+) | `stock.move.quantity_done` — 1 field duy nhất, label đổi sang "SL Thực Nhận" ở state Đã Hoàn Thành |
+| Đơn Giá | `purchase.order.line.price_unit` |
+| CK (%) | `purchase.order.line.discount` |
+| Thuế VAT | `purchase.order.line.taxes_id` |
+| Thành Tiền (-V) | `price_unit × qty_done × (1 − discount/100)` — recompute real-time |
+| Tổng Tiền (+V) | Thành Tiền + thuế áp dụng — recompute real-time |
+
+**Summary cuối phiếu:** Tổng Thành Tiền (-V) / Tổng Thuế (tách dòng 5%/8%/10%) / Tổng Tiền (+V).
 
 ### Hành vi chi tiết DO
-- Bộ chọn ngày giao hàng ở đầu form DO
-- Mỗi dòng sản phẩm hiển thị tất cả các trường trên; số lượng giao là trường duy nhất có thể chỉnh sửa (cùng với ngày giao hàng)
-- Validation: số lượng giao phải <= số lượng đặt — cả frontend và backend đều thực thi
-- Nút "Lưu" gửi `PATCH /delivery-orders/:id/lines` — có thể nhấn nhiều lần trước khi ký
-- Nếu API trả về `locked: true`, tất cả input bị vô hiệu hoá và hiển thị thông báo khoá
-- Nút "Ký DO" ở cuối chỉ được bật khi ngày giao hàng đã đặt và tất cả giá trị số lượng giao > 0
-- Sau khi cutoff (Đã Gửi), trang hiển thị chỉ đọc với nút "In DO" để in PDF phiên bản cuối
-- Sau khi cửa hàng xác nhận biên nhận, cột `received_qty` được điền — vendor thấy cả số lượng giao và số lượng thực nhận của cửa hàng cạnh nhau
+- Ngày giao **cố định** từ PO (không có bộ chọn ngày trên DO Form)
+- SL Giao **mặc định = SL Đặt** khi PO confirmed (autofill, NCC chỉ sửa dòng cần giảm)
+- Validation: SL Giao ≤ SL Đặt — **chặn cứng cả frontend và backend**, không cho tăng vượt
+- Decimal theo UoM: kg/lít/mét → 2 chữ số thập phân; còn lại → số nguyên
+- Nút "Lưu" gửi `PATCH /api/delivery-orders/:id/lines` → ghi real-time lên `stock.move.line.qty_done`
+- **Indicator dirty:** khi vendor sửa SL Giao mà chưa Lưu → nút "Lưu" **bold + nền đỏ**; sau khi Lưu thành công → trắng/xám
+- Khi `scheduled_date.date() <= today` → API trả 423; UI lock toàn bộ input, hiển thị banner Đã Gửi
+- Sau cutoff (Đã Gửi), trang chỉ đọc với nút "In DO" để in PDF phiên bản cuối
+- Sau cửa hàng confirm Receipt (Đã Hoàn Thành), cột SL Giao đổi label thành "SL Thực Nhận" hiển thị giá trị `qty_done` cuối (có thể bị cửa hàng ghi đè)
+
+### Banner thông báo trạng thái khoá (theo state)
+- **Mới:** *"Phiếu giao hàng sẽ bị khoá tự động lúc 23:00 ngày `<scheduled_date − 1 ngày>`"*
+- **Đã Gửi:** *"Phiếu giao hàng đã không được tự chỉnh sửa SL giao sau 23:00 ngày `<scheduled_date − 1 ngày>` và đang chờ cửa hàng xác nhận"*
 
 ### Chi tiết PO — Xem DO và biên nhận
-Trang chi tiết PO hiển thị DO liên kết với trạng thái của nó. Khi DO ở trạng thái Done (cửa hàng xác nhận biên nhận):
-- **Số lượng DO của vendor** — những gì vendor dự định giao
-- **Số lượng cửa hàng thực nhận** — những gì cửa hàng thực sự xác nhận trong Odoo
-- So sánh từng dòng, làm nổi bật sự khác biệt giữa số lượng giao và số lượng nhận
+Trang chi tiết PO hiển thị link đến DO liên kết với badge state (Mới/Đã Gửi/Đã Hoàn Thành/Đã Huỷ). Khi DO Đã Hoàn Thành, vendor click vào DO để xem giá trị "SL Thực Nhận" và Log Note (lịch sử thay đổi `qty_done` nếu cửa hàng có sửa).
 
-### Trang lịch sử PDF
-- Liệt kê tất cả DO vendor đã ký, theo thứ tự thời gian đảo ngược
-- Mỗi dòng hiển thị: số PO, mã DO, ngày giao hàng, ngày ký, ghi chú vendor (nếu có), nút tải xuống
-- Tải xuống gọi `GET /api/delivery-orders/{do_id}/pdf` — PDF được giữ 24 tháng (khớp với thời hạn lưu PO)
+### Trang lịch sử PDF (DO/RO)
+- Liệt kê tất cả DO/RO của vendor, theo thứ tự thời gian đảo ngược
+- Mỗi dòng: số PO/RPO, mã DO/RO, ngày giao/nhận, state, nút tải xuống PDF
+- Tải xuống gọi `GET /api/delivery-orders/{do_id}/pdf` hoặc `GET /api/return-notes/{rn_id}/pdf` — PDF tạo on-the-fly mỗi lần (không lưu server)
 
-### Capture chữ ký và ghi chú
-- `signature_pad.js` render trên canvas HTML5 (tự điều chỉnh cho mobile)
-- Ô ghi chú tự do tuỳ chọn phía trên signature pad — vendor có thể mô tả điều kiện giao hàng hoặc ghi chú
-- Nút "Xóa" chỉ reset canvas
-- "Xác nhận & Gửi" gửi cả PNG chữ ký (base64) và văn bản ghi chú lên `POST /api/delivery-orders/:id/sign`
-- Pad và ô ghi chú bị vô hiệu hoá sau khi gửi thành công
-- Hiển thị trạng thái loading khi PDF đang được tạo phía server
+### Log Note (mục 8.5 README)
+- Hiển thị ở cuối mỗi phiếu (PO, DO, RPO, RO) — bảng các thay đổi từ Odoo: timestamp, trường, giá trị cũ → mới, người thực hiện (`res.users.name`)
+- Đặc biệt quan trọng cho DO — vendor xem cửa hàng có sửa `qty_done` so với giá trị vendor đã nhập hay không
+- Vendor changes attribution: ⚠️ Phụ thuộc quyết định [LOG-NOTE-ATTRIBUTION-001](IssueLog.md) trong IssueLog
 
 ### Các lưu ý UX quan trọng
-- Nhãn trường đăng nhập: **"Mã nhà cung cấp / Vendor ID"** với văn bản hướng dẫn giải thích đã được cung cấp trong email chào mừng (phải là input kiểu number)
-- Các dòng DO hiển thị số lượng đặt hàng, số lượng giao, và số lượng thực nhận (khi có) cạnh nhau để dễ so sánh
-- PO ở trạng thái Waiting hiển thị nút "Xác nhận PO" và "Từ chối" nổi bật
-- Thông báo khoá trên DO đã ký: "Phiếu giao hàng đã được ký / Delivery Order has been signed"
-- Placeholder ô ghi chú: "Ghi chú giao hàng / Delivery notes (optional)"
+- Nhãn trường đăng nhập: **"Mã nhà cung cấp / Vendor ID"** với văn bản hướng dẫn giải thích đã được cung cấp trong email chào mừng (input type number)
+- PO ở trạng thái Waiting hiển thị 2 nút nổi bật: "Xác Nhận Đơn Đặt Hàng" và "Từ Chối"
+- Trường ngày giao trên PO Form pre-fill = `date_planned` cửa hàng (ngày cụ thể, không placeholder dd/mm/yyyy)
+- Popup confirm PO hiển thị 2 dòng ngày: "Ngày đề nghị giao hàng" và "Ngày bạn xác nhận giao hàng"
+- Banner cảnh báo auto-cancel trên PO Waiting: *"Đơn Đặt Hàng sẽ tự động huỷ sau Ngày Giao Dự Kiến + 7 nếu nhà cung cấp không phản hồi"*
+- Placeholder ô ghi chú DO: "Ghi chú giao hàng / Delivery notes (optional)"
 - Tất cả form submission vô hiệu hoá nút khi đang gửi để tránh gửi trùng
 
 ---

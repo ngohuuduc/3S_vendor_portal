@@ -4,6 +4,35 @@ Ghi lại các vấn đề kiến trúc / thiết kế đang mở, chưa có quy
 
 ---
 
+## [OPEN] AUTOCANCEL-CRON-TIMING-001 — Cron job auto-cancel PO sau 7 ngày — thời điểm chạy
+
+**Ngày mở:** 2026-05-24
+**Người mở:** trang.nat
+**Trạng thái:** OPEN — chờ Đức quyết định (việc set up cron trên Vendor Portal có phức tạp không, ảnh hưởng đến lựa chọn)
+
+### Bối cảnh
+
+Spec: PO bị tự động huỷ nếu vendor không phản hồi trong **7 ngày dương lịch** kể từ Expected Arrival (`date_planned`). Portal tự gọi `button_cancel` qua XML-RPC + gửi email đến Vendor + Buyer + Kho Nhận Hàng.
+
+### Vấn đề
+
+Cần xác định **thời điểm chạy cron** trong ngày:
+- Đầu ngày (00:01)? Cuối ngày (23:55)? Một thời điểm cố định khác?
+- Tần suất kiểm tra: 1 lần/ngày là đủ vì độ granular là "ngày", không cần realtime
+- Lý do timing quan trọng: ảnh hưởng đến vendor có "kịp" phản hồi trong ngày thứ 7 hay không
+
+### Câu hỏi cho Đức
+
+- Việc set up cron trên Vendor Portal có phức tạp không? Có sẵn scheduler infrastructure không?
+- Chọn thời điểm nào trong ngày để chạy cron auto-cancel?
+
+### Hành động kế tiếp
+
+- [ ] Đức review độ phức tạp cron + quyết định thời điểm chạy
+- [ ] Cập nhật spec với timing cụ thể
+
+---
+
 ## [OPEN] LOG-NOTE-ATTRIBUTION-001 — Người thực hiện trong Log Note khi vendor edit qua Portal
 
 **Ngày mở:** 2026-05-24
@@ -47,7 +76,7 @@ Nút "In" trên giao diện Phiếu Giao Nhận (DO Form) đang bị lỗi — b
 
 - Endpoint backend tạo PDF (WeasyPrint hoặc tương đương)
 - Quyền truy cập (vendor-scoped)
-- Cả 4 loại phiếu: Phiếu Giao Hàng (DO), Phiếu Nhận Hàng (RO) — kiểm tra xem cả 2 cùng lỗi hay chỉ DO
+- Cả 4 loại phiếu: Phiếu Giao Hàng (DO), Phiếu Trả Hàng (RO) — kiểm tra xem cả 2 cùng lỗi hay chỉ DO
 
 ### Hành động kế tiếp
 

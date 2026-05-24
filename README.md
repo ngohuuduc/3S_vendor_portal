@@ -11,7 +11,7 @@
 
 ## Tổng Quan Dự Án
 
-Một cổng thông tin web song ngữ (Tiếng Việt + Tiếng Anh) độc lập phục vụ hai loại người dùng: **nhà cung cấp (vendor)** và **quản trị viên portal (portal admin)**. Vendor đăng nhập bằng **Vendor ID** (`res.partner.id` từ Odoo), xác nhận hoặc từ chối các RFQ đã gửi, chỉnh sửa Delivery Order (số lượng, ghi chú) và in DO PDF, đồng thời theo dõi trạng thái giao hàng cho đến khi cửa hàng xác nhận biên nhận. Portal cũng hỗ trợ trả hàng thông qua Return Purchase Order (RPO) và Phiếu Nhận Hàng (Return Order). Vendor có thể xuất dữ liệu dưới dạng PDF hoặc CSV phục vụ lập hóa đơn và đối soát. Portal admin dùng chung giao diện với vendor nhưng có thêm quyền xem toàn bộ vendor, toàn bộ PO và DO trong hệ thống, kích hoạt đồng bộ Odoo thủ công, và tải xuống PDF của bất kỳ vendor nào (mở khoá DO thực hiện trực tiếp trên Odoo, không qua Portal). Portal chạy trên một VM riêng biệt với Odoo và tích hợp qua Odoo XML-RPC API bằng một tài khoản dịch vụ chuyên dụng. **Vendor chỉ truy cập portal; cửa hàng chỉ truy cập Odoo.** Toàn bộ email được gửi qua AWS SES.
+Một cổng thông tin web song ngữ (Tiếng Việt + Tiếng Anh) độc lập phục vụ hai loại người dùng: **nhà cung cấp (vendor)** và **quản trị viên portal (portal admin)**. Vendor đăng nhập bằng **Vendor ID** (`res.partner.id` từ Odoo), xác nhận hoặc từ chối các RFQ đã gửi, chỉnh sửa Delivery Order (số lượng, ghi chú) và in DO PDF, đồng thời theo dõi trạng thái giao hàng cho đến khi cửa hàng xác nhận biên nhận. Portal cũng hỗ trợ trả hàng thông qua Return Purchase Order (RPO) và Phiếu Trả Hàng (Return Order). Vendor có thể xuất dữ liệu dưới dạng PDF hoặc CSV phục vụ lập hóa đơn và đối soát. Portal admin dùng chung giao diện với vendor nhưng có thêm quyền xem toàn bộ vendor, toàn bộ PO và DO trong hệ thống, kích hoạt đồng bộ Odoo thủ công, và tải xuống PDF của bất kỳ vendor nào (mở khoá DO thực hiện trực tiếp trên Odoo, không qua Portal). Portal chạy trên một VM riêng biệt với Odoo và tích hợp qua Odoo XML-RPC API bằng một tài khoản dịch vụ chuyên dụng. **Vendor chỉ truy cập portal; cửa hàng chỉ truy cập Odoo.** Toàn bộ email được gửi qua AWS SES.
 
 ---
 
@@ -168,7 +168,9 @@ RFQ ở trạng thái Draft không được hiển thị. Vendor có thể xem d
 - Từ chối là cuối cùng — cửa hàng phải tạo RFQ mới nếu muốn đặt hàng lại. 
 
 **Tự động hủy:**
-- Nếu vendor không xác nhận hoặc từ chối PO ở trạng thái Waiting trong vòng **7 ngày dương lịch kể từ Expected Arrival date** (`date_planned` trên `purchase.order`), portal tự động hủy trong Odoo. 
+- Nếu vendor không xác nhận hoặc từ chối PO ở trạng thái Waiting trong vòng **7 ngày dương lịch kể từ Expected Arrival date** (`date_planned` trên `purchase.order`), **Portal tự động hủy trong Odoo** (Portal cron job gọi `button_cancel` qua XML-RPC) và **Portal tự gửi email** đến Vendor + Buyer + Kho Nhận Hàng.
+- **Thời gian cron job auto-cancel chạy:** ⚠️ TBD — chờ Đức quyết định (xem [AUTOCANCEL-CRON-TIMING-001](IssueLog.md))
+- **Side effect:** khi PO bị huỷ trên Odoo (do Portal auto-cancel, vendor từ chối, hoặc cửa hàng huỷ trên Odoo), **Odoo tự động cancel `stock.picking` liên kết** (DO chuyển sang state `cancel` → Portal hiển thị **Đã Huỷ**). Chỉ thực hiện được nếu DO **chưa Đã Hoàn Thành** — picking đã `done` thì không cancel được.
 - Một scheduled job kiểm tra hằng ngày các PO Waiting quá hạn
 - Email thông báo gửi đến **cả vendor lẫn Buyer** (`purchase.order.user_id`) khi PO bị tự động hủy
 
@@ -358,7 +360,7 @@ Trước đây tất cả phiếu giao/nhận gộp chung dưới một menu "Ph
 | **Đơn Đặt Hàng** | `purchase.order` (RFQ + PO confirmed) | Mua hàng | Xác nhận / Từ chối |
 | **Phiếu Giao Hàng (NCC giao)** | `stock.picking` type incoming (3SACH nhận từ NCC) — gắn với `purchase.order` thường | Mua hàng | Chỉnh SL giao, in PDF |
 | **Đơn Trả Hàng** | `purchase.order` với qty âm (RPO) | Trả hàng | Xem, chỉnh ngày nhận |
-| **Phiếu Nhận Hàng (3SACH nhận)** | `stock.picking` type outgoing trả hàng (RO) — gắn với RPO | Trả hàng | Chỉnh ngày nhận, in PDF |
+| **Phiếu Trả Hàng (3SACH trả lại cho NCC)** | `stock.picking` type outgoing trả hàng (RO) — gắn với RPO | Trả hàng | Chỉnh ngày nhận, in PDF |
 
 Mỗi menu có list view + form view riêng. Spec chi tiết các section dưới (8.1, 8.2, 8.3, 8.4) áp dụng tương ứng.
 
@@ -460,7 +462,7 @@ Mỗi menu có list view + form view riêng. Spec chi tiết các section dướ
 
 **Ghi chú phiếu:** Portal DB — `delivery_orders.note` — một ô text ở **header DO**, vendor điền khi ở trạng thái Mới (Draft), áp dụng cho toàn bộ phiếu. Không có ghi chú riêng từng dòng SP.
 
-> **Log Note:** xem mục **8.5 Log Note** ở dưới — áp dụng cho **cả 4 phiếu**: Đơn Đặt Hàng (PO), Phiếu Giao Hàng (DO), Đơn Trả Hàng (RPO), Phiếu Nhận Hàng (RO). Trên DO, Log Note đặc biệt hữu ích để vendor xem cửa hàng có sửa `qty_done` so với giá trị mình đã nhập hay không (do dùng 1 field duy nhất, không có cảnh báo chênh lệch qua email).
+> **Log Note:** xem mục **8.5 Log Note** ở dưới — áp dụng cho **cả 4 phiếu**: Đơn Đặt Hàng (PO), Phiếu Giao Hàng (DO), Đơn Trả Hàng (RPO), Phiếu Trả Hàng (RO). Trên DO, Log Note đặc biệt hữu ích để vendor xem cửa hàng có sửa `qty_done` so với giá trị mình đã nhập hay không (do dùng 1 field duy nhất, không có cảnh báo chênh lệch qua email).
 
 **Thay đổi quan trọng:**
 - **Bỏ phần Ký phiếu giao nhận** — không cần chữ ký điện tử trên Portal
@@ -489,9 +491,9 @@ Mỗi menu có list view + form view riêng. Spec chi tiết các section dướ
 | Done | Hoàn Thành | **Đã Hoàn Thành** |
 | Cancelled | Đã Huỷ | **Đã Huỷ** |
 
-#### 8.4 RPO / RO View (Đơn Trả Hàng + Phiếu Nhận Hàng — 3SACH nhận)
+#### 8.4 RPO / RO View (Đơn Trả Hàng + Phiếu Trả Hàng — 3SACH trả lại cho NCC)
 
-**RPO List View — Danh sách Đơn Trả Hàng:** cấu trúc cột tương tự PO List (Số đơn, Ngày đặt, Ngày trả dự kiến, Warehouse, Trạng thái, Tổng tiền), kèm cột **"Phiếu Nhận Hàng"** (thay vị trí cột "Phiếu Giao Hàng" trên PO List) — badge state của RO derive từ `stock.picking.state` của picking trả hàng tương ứng.
+**RPO List View — Danh sách Đơn Trả Hàng:** cấu trúc cột tương tự PO List (Số đơn, Ngày đặt, Ngày trả dự kiến, Warehouse, Trạng thái, Tổng tiền), kèm cột **"Phiếu Trả Hàng"** (thay vị trí cột "Phiếu Giao Hàng" trên PO List) — badge state của RO derive từ `stock.picking.state` của picking trả hàng tương ứng.
 
 **Trạng thái RO (2 trạng thái song ngữ — không có Đã Huỷ vì Odoo return picking không có state cancel độc lập):**
 
@@ -538,7 +540,7 @@ Mỗi menu có list view + form view riêng. Spec chi tiết các section dướ
 
 #### 8.5 Log Note (Lịch sử thay đổi từ Odoo)
 
-**Phạm vi:** Log Note hiển thị trên **cả 4 phiếu**: Đơn Đặt Hàng (PO), **Phiếu Giao Hàng (DO)**, Đơn Trả Hàng (RPO), Phiếu Nhận Hàng (RO). Trên DO đặc biệt cần thiết để vendor track việc cửa hàng có ghi đè `qty_done` so với giá trị vendor đã nhập (do cơ chế 1 field, không có cảnh báo qua email).
+**Phạm vi:** Log Note hiển thị trên **cả 4 phiếu**: Đơn Đặt Hàng (PO), **Phiếu Giao Hàng (DO)**, Đơn Trả Hàng (RPO), Phiếu Trả Hàng (RO). Trên DO đặc biệt cần thiết để vendor track việc cửa hàng có ghi đè `qty_done` so với giá trị vendor đã nhập (do cơ chế 1 field, không có cảnh báo qua email).
 
 **Khi nào hiển thị:** Khi cửa hàng / admin chỉnh sửa các trường thông tin trên record Odoo tương ứng (ví dụ: thay đổi `product_qty`, `price_unit`, `date_planned`, `scheduled_date`), portal hiển thị một bảng Log Note ở cuối phiếu để NCC theo dõi.
 
