@@ -173,7 +173,7 @@ vendor-portal/
 | Model | Mục đích | Các trường chính |
 |---|---|---|
 | `res.partner` | Đồng bộ hồ sơ vendor | `id`, `name`, `email` (bắt buộc — sync bỏ qua partner không có email), `company_name`, `phone`, `mobile`, `vat` (Mã số thuế), `is_vendor` (bộ lọc: chỉ sync nơi `is_vendor = True` và có `email`) |
-| `purchase.order` | Danh sách PO, chi tiết, xác nhận, từ chối | `name`, `partner_id`, `state`, `date_order`, `date_planned` (Expected Arrival), `amount_total`, `order_line`, `picking_ids`, `user_id` (PO creator để gửi email) — gọi `button_confirm` hoặc `button_cancel` khi vendor hành động |
+| `purchase.order` | Danh sách PO, chi tiết, xác nhận, từ chối | `name`, `partner_id`, `state`, `date_order`, `date_planned` (Expected Arrival), `amount_total`, `order_line`, `picking_ids`, `user_id` (**Buyer** — người mua phụ trách, dùng để gửi email; fallback `create_uid` nếu trống), `picking_type_id` → `warehouse_id` (**Kho Nhận Hàng**) — gọi `button_confirm` hoặc `button_cancel` khi vendor hành động |
 | `purchase.order.line` | Các dòng sản phẩm PO | `product_id`, `name`, `product_qty`, `qty_received`, `price_unit`, `product_uom` (UoM của dòng này) |
 | `product.product` | Thông tin sản phẩm cho DO PDF | `id`, `name`, `barcode` |
 | `stock.picking` | Header Receipt | `name`, `state`, `scheduled_date`, `origin`, `move_line_ids` |
@@ -661,7 +661,7 @@ Tất cả container: `restart: unless-stopped`. Health check trên backend cont
 - [ ] API key tài khoản dịch vụ Odoo được tạo và kiểm tra kết nối từ portal VM
 - [ ] Firewall: portal VM → Odoo VM cổng 8069 mở
 - [ ] Sender domain AWS SES được xác minh, IAM credentials đã cấu hình
-- [ ] Xác minh trường email PO creator có thể truy cập qua Odoo XML-RPC (`purchase.order` → `user_id` → `email`)
+- [ ] Xác minh trường email Buyer + Kho Nhận Hàng có thể truy cập qua Odoo XML-RPC (`purchase.order.user_id.email` với fallback `create_uid.email`; `purchase.order.picking_type_id.warehouse_id` → email warehouse / partner liên kết)
 - [ ] `ADMIN_INITIAL_PASSWORD` đã đặt và tài khoản admin đầu tiên đã được seed
 - [ ] Tất cả secrets production đã đặt trong Docker secrets files
 - [ ] Upstream load balancer / proxy đã cấu hình chuyển tiếp HTTPS
