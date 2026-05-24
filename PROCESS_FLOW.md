@@ -18,7 +18,7 @@ flowchart LR
     P_DO([🔄 Odoo tự tạo DO\nngày giao = date_planned đã xác nhận]):::portal
     V2([📦 Điền số lượng\nvà ghi chú tổng phiếu\ntrên Portal]):::vendor
 
-    P_CUT{{23:00 đêm trước\nngày giao\nDO Locked + push qty}}:::portal
+    P_CUT{{23:00 đêm trước\nngày giao\nDO chuyển Đã Gửi\n(UI lock only, qty đã ghi\nreal-time từ trước)}}:::portal
 
     V3([🖨️ In DO PDF\nbản cuối — 2 bản]):::vendor
     V4([🚚 Cầm 2 tờ DO\nra cửa hàng]):::vendor
@@ -71,7 +71,7 @@ flowchart TD
     subgraph DO["Delivery Order — Vendor Portal"]
         C1["Odoo tự tạo 1 DO (stock.picking)\nkhi PO confirmed\nNgày giao = date_planned đã xác nhận bởi NCC"] --> C2["NCC sửa DO trên portal:\n- Số lượng giao (≤ qty đặt, đúng decimal UoM)\n- Ghi chú tổng phiếu (header)\n(Ngày giao không chỉnh được — lấy từ PO)"]
         C2 --> C3["Nhà cung cấp in DO PDF\n(in trực tiếp, không cần ký)\nCó thể in nhiều lần"]
-        C3 --> C4["Hạn chót: 23:00 đêm trước ngày giao\n(= scheduled_date trên DO)\nDO tự động → Locked\nPush quantity_done → stock.move.line"]
+        C3 --> C4["Hạn chót: 23:00 đêm trước ngày giao\n(= scheduled_date − 1 ngày)\nDO tự động → Đã Gửi (Sent)\nUI lock only — không push\n(qty đã ghi real-time qua PATCH)"]
         C4 --> C5["Nhà cung cấp in DO PDF phiên bản cuối\nIn 2 bản"]
     end
 
@@ -82,14 +82,14 @@ flowchart TD
     end
 
     subgraph STORE_CONFIRM["Xác Nhận Biên Nhận — Odoo"]
-        E1["Cửa hàng xác nhận Receipt\nqty_done finalized\nstock move được tạo"] --> E2["Nightly sync 23:00\nPortal cập nhật DO → Done"]
+        E1["Cửa hàng xác nhận Receipt\nqty_done finalized\nstock move được tạo"] --> E2["Portal live query Odoo\nDO → Đã Hoàn Thành (Done)\n(real-time, không nightly sync)"]
         E2 --> E3["Email đến nhà cung cấp\nXác nhận biên nhận\nCảnh báo nếu qty chênh lệch"]
     end
 
-    subgraph UNLOCK["Ngoại Lệ: Mở Khoá DO"]
-        G1(["Nhà cung cấp nhập sai số lượng"]) --> G2["Portal Admin mở khoá DO\nTrạng thái DO trở về Draft"]
-        G2 --> G3[Email thông báo gửi đến nhà cung cấp]
-        G3 --> G4[Nhà cung cấp cập nhật DO và in lại]
+    subgraph UNLOCK["Ngoại Lệ: Mở Khoá DO (qua Odoo, KHÔNG qua Portal)"]
+        G1(["Nhà cung cấp nhập sai số lượng"]) --> G2["Admin cập nhật scheduled_date\nTRÊN ODOO (đẩy về tương lai)"]
+        G2 --> G3["Lock condition tự giải phóng\n(scheduled_date <= today = false)"]
+        G3 --> G4["Vendor cập nhật DO và in lại\ntrên Portal (state Mới trở lại)"]
     end
 
     subgraph RETURNS["Quy Trình Trả Hàng"]
@@ -107,7 +107,7 @@ flowchart TD
     B6 --> C1
     C5 --> D1
     D4 --> E1
-    C4 -.->|"Trạng thái Locked / Khoá"| G1
+    C4 -.->|"Trạng thái Đã Gửi (vendor cần unlock)"| G1
     G4 -.->|"Quay lại chỉnh sửa"| C2
 ```
 
@@ -133,7 +133,7 @@ sequenceDiagram
     Portal->>Vendor: DO sẵn sàng — ngày giao cố định từ PO
     Vendor->>Portal: Chỉnh qty (đúng decimal UoM)
     Vendor->>Portal: In DO PDF (in trực tiếp, có thể in nhiều lần)
-    Note over Portal: 23:00 đêm trước scheduled_date → DO Locked + push quantity_done lên Odoo
+    Note over Portal: 23:00 đêm trước scheduled_date → DO chuyển Đã Gửi (UI lock only, qty đã ghi real-time qua PATCH)
     Portal->>Vendor: In DO PDF phiên bản cuối (2 bản)
 
     Note over Vendor,Store: ── Giai đoạn 3: Giao Hàng Thực Tế ──
@@ -143,7 +143,7 @@ sequenceDiagram
     Note over Vendor,Store: ── Giai đoạn 4: Xác Nhận Biên Nhận trên Odoo ──
     Store->>Odoo: Xem xét Receipt, điều chỉnh số lượng nếu hàng hư
     Store->>Odoo: Xác nhận Receipt — qty_done finalized
-    Odoo->>Portal: Nightly sync 23:00 → portal cập nhật DO → Done
+    Odoo->>Portal: Portal live query (real-time) — DO → Đã Hoàn Thành
     Portal->>Vendor: Email: xác nhận biên nhận (cảnh báo nếu qty chênh lệch)
 
     Note over Vendor,Store: ── Giai đoạn 5: Trả Hàng ──
@@ -158,8 +158,9 @@ sequenceDiagram
     Note over Vendor,Store: ── Giai đoạn 6: Xuất Dữ Liệu ──
     Vendor->>Portal: Xuất PDF (riêng lẻ hoặc tổng hợp) hoặc CSV
 
-    Note over Vendor,Store: ── Ngoại Lệ: Mở Khoá DO ──
-    Portal->>Vendor: Admin mở khoá DO (trạng thái -> Draft) + email thông báo
+    Note over Vendor,Store: ── Ngoại Lệ: Mở Khoá DO (qua Odoo, không qua Portal) ──
+    Store->>Odoo: Admin cập nhật scheduled_date (đẩy về tương lai)
+    Note over Portal: Lock condition tự giải phóng (scheduled_date > today)
     Vendor->>Portal: Chỉnh sửa lại số lượng DO và in lại
 ```
 
@@ -197,7 +198,7 @@ sequenceDiagram
 | DO được in bởi nhà cung cấp | — | — | Không gửi email khi in |
 | Biên nhận được cửa hàng xác nhận (qty khớp) | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Xác nhận kèm số PO, mã biên nhận |
 | Biên nhận được cửa hàng xác nhận (qty chênh lệch) | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Cảnh báo kèm chi tiết chênh lệch |
-| DO được admin mở khoá | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Thông báo DO đã sẵn sàng để chỉnh sửa lại |
+| ~~DO được admin mở khoá~~ | — | — | **Không gửi email** — không có chức năng admin unlock trên Portal (DO-LIVE-001 Blocker 6). Admin reset `scheduled_date` trên Odoo trực tiếp |
 
 > Tất cả email gửi đến nhà cung cấp tuân theo `vendor_users.preferred_language` (`vi` hoặc `en`). Email nội bộ luôn bằng tiếng Việt. Gửi email qua **AWS SES** với IAM user chuyên dụng (chỉ có quyền `ses:SendEmail`).
 
@@ -213,12 +214,12 @@ Portal admin dùng chung bố cục giao diện với nhà cung cấp và có th
 | Xem chi tiết PO và biên nhận của một nhà cung cấp cụ thể | `GET /api/admin/vendors/{partner_id}` |
 | Kích hoạt / vô hiệu hoá tài khoản nhà cung cấp | `PATCH /api/admin/vendors/{partner_id}/deactivate|reactivate` |
 | Tải xuống PDF DO của bất kỳ nhà cung cấp nào | `GET /api/admin/delivery-orders/{do_id}/pdf` |
-| Mở khoá DO đã Locked (nhà cung cấp có thể chỉnh sửa và in lại) | `POST /api/admin/delivery-orders/{do_id}/unlock` |
+| ~~Mở khoá DO đã Locked~~ — **không có endpoint trên Portal** (admin mở khoá bằng cách cập nhật `scheduled_date` trên Odoo trực tiếp; xem DO-LIVE-001 Blocker 6) | — |
 | Kích hoạt thủ công job đồng bộ partner Odoo | `POST /api/admin/sync` |
 | Xem trạng thái sync (lần chạy cuối, số vendor đã sync, số bị bỏ qua) | `GET /api/admin/sync/status` |
 | Xem audit log có phân trang | `GET /api/admin/audit-log` |
 
-**Audit log** ghi lại các loại hành động: `login`, `po_confirm`, `po_reject`, `po_auto_cancel`, `do_update`, `do_print`, `do_unlock`, `rn_print`, `receipt_validated`. Chỉ được ghi thêm — không thể chỉnh sửa hoặc xoá qua portal.
+**Audit log** ghi lại các loại hành động: `login`, `po_confirm`, `po_reject`, `po_auto_cancel`, `do_update`, `do_print`, `rn_print`, `receipt_validated`. Chỉ được ghi thêm — không thể chỉnh sửa hoặc xoá qua portal. (Đã bỏ `do_unlock` vì không có chức năng admin unlock trên Portal.)
 
 **Không thể chỉnh sửa hồ sơ trong portal.** Mọi thay đổi hồ sơ nhà cung cấp (tên, email, điện thoại, công ty) phải thực hiện trong Odoo và sẽ được đồng bộ trong chu kỳ 6 giờ tiếp theo. Admin không thể chỉnh sửa hồ sơ nhà cung cấp trực tiếp.
 
@@ -238,7 +239,7 @@ Portal và Odoo duy trì **nhãn trạng thái khác nhau**. Hành vi gốc củ
 
 ## State Machine của DO
 
-> **Label tiếng Việt hiển thị trên giao diện:** 4 trạng thái — Draft → **Mới**, Locked → **Đã Gửi**, Done → **Đã Hoàn Thành**, Cancelled → **Đã Huỷ**.
+> **Label song ngữ hiển thị trên giao diện (VN / EN):** 4 trạng thái — Draft → **Mới (New)**, Locked → **Đã Gửi (Sent)**, Done → **Đã Hoàn Thành (Done)**, Cancelled → **Đã Huỷ (Canceled)**.
 
 ```mermaid
 stateDiagram-v2
@@ -248,13 +249,13 @@ stateDiagram-v2
         Vendor sửa qty_done\nvà ghi chú tổng phiếu\n(qty mặc định = qty đặt)
     end note
 
-    Draft --> Locked : Hạn chót: 23:00 đêm trước\nscheduled_date trên DO\n(scheduled_date − 1 ngày)\n→ push quantity_done\n(VN: "Đã Gửi")
+    Draft --> Locked : Hạn chót: 23:00 đêm trước\nscheduled_date trên DO\n(scheduled_date − 1 ngày)\nUI lock only (không push)\n(VN: "Đã Gửi")
 
-    Locked --> Draft : Portal Admin mở khoá\n(nhà cung cấp được thông báo qua email)
+    Locked --> Draft : Admin cập nhật scheduled_date\nTRÊN ODOO (đẩy về tương lai)\n→ lock condition tự giải phóng
 
-    Locked --> Done : Nightly sync phát hiện\ncửa hàng đã xác nhận Receipt
+    Locked --> Done : Cửa hàng confirm Receipt\n(real-time, live query)
 
-    Draft --> Done : Nightly sync phát hiện\nReceipt đã confirm\n(vendor chưa dùng portal)
+    Draft --> Done : Live query phát hiện\nReceipt đã confirm\n(vendor chưa dùng portal)
 
     Done --> [*]
 
@@ -273,12 +274,13 @@ stateDiagram-v2
 
     note right of Locked
         Hạn chót: 23:00 đêm trước scheduled_date
-        Push quantity_done → stock.move.line
+        UI lock only (derive từ scheduled_date.date() <= today)
+        Không có job push, không có nightly sync
         NCC: chỉ đọc, in PDF phiên bản cuối
     end note
 
     note right of Done
-        Nhà cung cấp: chỉ đọc, thấy qty thực tế nhận được
+        Nhà cung cấp: chỉ đọc, thấy SL Giao + SL Thực Nhận (2 cột song song)
         Có thể xuất PDF/CSV
         Gửi email nếu qty chênh lệch
     end note
@@ -348,7 +350,7 @@ stateDiagram-v2
 
 - Nhà cung cấp có thể xem dữ liệu PO trong **24 tháng** kể từ ngày tạo PO
 - Áp dụng cho **tất cả trạng thái PO**: Waiting, Confirmed, Canceled
-- Áp dụng cho **tất cả trạng thái DO**: Draft, Locked, Done, Canceled
+- Áp dụng cho **tất cả trạng thái DO**: Mới (New), Đã Gửi (Sent), Đã Hoàn Thành (Done), Đã Huỷ (Canceled)
 - Áp dụng cho trả hàng (RPO/RO) như nhau
 - PO cũ hơn 24 tháng bị **xoá vĩnh viễn** khỏi cơ sở dữ liệu portal
 - Một scheduled cleanup job chạy định kỳ để thực thi quy tắc này
@@ -370,8 +372,8 @@ stateDiagram-v2
 
 | # | Chủ đề | Chi tiết | Trả lời |
 |---|---|---|---|
-| 1 | **Hai job 23:00 chạy cùng lúc** | Job cutoff (lock DO + push Odoo) và job nightly sync (check receipt confirmed → DO Done) đều chạy lúc 23:00. Nếu cửa hàng đã confirm receipt trước 23:00 mà DO vẫn Draft → thứ tự xử lý thế nào? DO đi Draft → Locked → Done hay Draft → Done? |DO được cập nhật theo thời gian thực; sau 23PM trước ngày giao hàng dự kiến NCC chỉ có thể xem DO chứ không được chỉnh sửa (lock trên Portal); Confirmed và Validate (Ready--> Done ---> Draft) là hành động của phía của hàng trên Odoo: Không có Job Sync vì **theo thời gian thực** | 
-| 2 | **RO có cần Unlock không?** | DO có cơ chế Unlock (admin mở khoá Locked → Draft). RO hiện không có. Nếu ngày nhận hàng sai sau 23:00 cutoff, có cách sửa không? | Unlock xảy ra trên Odoo không xảy trên portal và hiện tại quy trình không phân định NCC được chỉnh sửa cái gì.  | 
+| 1 | **~~Hai job 23:00 chạy cùng lúc~~** (Q&A lịch sử) | ~~Job cutoff (lock DO + push Odoo) và job nightly sync...~~ | **Đã giải quyết bởi [DO-LIVE-001](IssueLog.md):** Không có job cutoff, không có nightly sync. DO update theo thời gian thực qua live query Odoo. 23:00 chỉ là UI lock trên Portal (derive từ `scheduled_date.date() <= today`). | 
+| 2 | **RO có cần Unlock không?** | DO không có endpoint unlock trên Portal — admin reset `scheduled_date` trên Odoo. RO hiện không có cơ chế tương đương. Nếu ngày nhận hàng sai, có cách sửa không? | Unlock xảy ra trên Odoo không xảy trên portal. RO chỉ cho vendor chỉnh `pickup_date`. | 
 
 ---
 
