@@ -116,23 +116,16 @@ Hiện tại:
 
 **Kết luận (2026-04-11):** Thực tế rất ít PO có trên 10 dòng. Phải gọi N lần `write()` riêng biệt (mỗi dòng một `qty_done` khác nhau), nhưng với N < 10 thì chấp nhận được. Dùng `asyncio.gather()` để song song hoá. Khi implement nên thêm `logger.info("elapsed=%.3fs", ...)` để có số liệu thực tế.
 
-### ~~Blocker 3~~ — Nhập nhằng `received_qty` — **RESOLVED (đã sửa mô tả 2026-05-24)**
+### ~~Blocker 3~~ — Nhập nhằng `received_qty` — **RESOLVED**
 
-**Quyết định gốc (2026-04-11):** Vendor không cần thấy số lượng gốc của mình sau khi cửa hàng validate. Chỉ dùng `stock.move.line.qty_done` từ Odoo, đổi label theo picking state.
+**Quyết định (2026-04-11), được chị xác nhận lại 2026-05-24:** Vendor không cần thấy số lượng gốc của mình sau khi cửa hàng validate. **Chỉ dùng 1 field duy nhất** `stock.move.line.qty_done` (hoặc `stock.move.quantity_done` ở cấp move = computed sum) — vendor ghi vào field này trong state Mới, cửa hàng ghi đè (nếu có sửa khi confirm). Portal đổi **label** theo picking state:
 
-**⚠️ Sửa mô tả (2026-05-24):** Implementation thực tế dùng **2 field riêng biệt** trên `stock.move` (không phải `stock.move.line.qty_done` duy nhất như ghi sai ở trên):
+- `assigned` (Mới / Đã Gửi): hiển thị label **"SL Giao"** (vendor đang nhập hoặc đã khoá)
+- `done` (Đã Hoàn Thành): hiển thị label **"SL Thực Nhận"** (cửa hàng đã chốt — có thể bị ghi đè so với giá trị vendor nhập nếu hàng hư hỏng)
 
-- **SL Giao** (NCC nhập trên Portal) → ghi xuống `stock.move.product_uom_qty` (demand quantity)
-- **SL Thực Nhận** (cửa hàng xác nhận trên Odoo) → ghi vào `stock.move.quantity_done` (computed sum của `stock.move.line.qty_done`)
+Không cần snapshot, không cần bảng phụ — Portal chỉ đọc 1 field từ Odoo và đổi label theo state.
 
-**Hiển thị trên Portal theo state:**
-
-| State | Cột hiển thị |
-|---|---|
-| Mới (editable) / Đã Gửi (frozen) | Chỉ 1 cột "SL Giao" (`product_uom_qty`) |
-| Đã Xác Nhận | **Cả 2 cột song song**: "SL Giao" (`product_uom_qty` vendor đã gửi) + "SL Thực Nhận" (`quantity_done` cửa hàng chốt) — để vendor đối chiếu nếu có lệch (hàng hư hỏng…) |
-
-Không cần snapshot, không cần bảng phụ — cả 2 field đều đã có sẵn trên Odoo.
+**Lưu ý:** Bản update 2026-05-24 trước đó (em ghi 2 field `product_uom_qty` + `quantity_done`) là **SAI** — đã revert về cơ chế 1 field gốc.
 
 ### ~~Blocker 4~~ — Timestamp khoá (`locked_at`) — **RESOLVED**
 

@@ -83,7 +83,7 @@ flowchart TD
 
     subgraph STORE_CONFIRM["Xác Nhận Biên Nhận — Odoo"]
         E1["Cửa hàng xác nhận Receipt\nqty_done finalized\nstock move được tạo"] --> E2["Portal live query Odoo\nDO → Đã Hoàn Thành (Done)\n(real-time, không nightly sync)"]
-        E2 --> E3["Email đến nhà cung cấp\nXác nhận biên nhận\nCảnh báo nếu qty chênh lệch"]
+        E2 --> E3["Email đến nhà cung cấp\nXác nhận biên nhận (đơn thuần)\nKhông kèm cảnh báo chênh lệch"]
     end
 
     subgraph UNLOCK["Ngoại Lệ: Mở Khoá DO (qua Odoo, KHÔNG qua Portal)"]
@@ -144,7 +144,7 @@ sequenceDiagram
     Store->>Odoo: Xem xét Receipt, điều chỉnh số lượng nếu hàng hư
     Store->>Odoo: Xác nhận Receipt — qty_done finalized
     Odoo->>Portal: Portal live query (real-time) — DO → Đã Hoàn Thành
-    Portal->>Vendor: Email: xác nhận biên nhận (cảnh báo nếu qty chênh lệch)
+    Portal->>Vendor: Email: xác nhận biên nhận (đơn thuần, không cảnh báo chênh lệch — Log Note hiển thị lịch sử thay đổi qty_done nếu cần)
 
     Note over Vendor,Store: ── Giai đoạn 5: Trả Hàng ──
     Store->>Odoo: Tạo RPO
@@ -196,8 +196,8 @@ sequenceDiagram
 | RFQ bị từ chối bởi nhà cung cấp | **Buyer** (`purchase.order.user_id`, fallback `create_uid`) **+ Kho Nhận Hàng** (`purchase.order.picking_type_id.warehouse_id`) | Tiếng Việt | Mã RFQ, tên nhà cung cấp, lý do |
 | PO tự động hủy (7 ngày dương lịch sau Expected Arrival) | Nhà cung cấp + **Buyer + Kho Nhận Hàng** | Ngôn ngữ ưa thích / Tiếng Việt | PO tự động hủy — không phản hồi trong 7 ngày |
 | DO được in bởi nhà cung cấp | — | — | Không gửi email khi in |
-| Biên nhận được cửa hàng xác nhận (qty khớp) | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Xác nhận kèm số PO, mã biên nhận |
-| Biên nhận được cửa hàng xác nhận (qty chênh lệch) | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Cảnh báo kèm chi tiết chênh lệch |
+| Biên nhận được cửa hàng xác nhận | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Xác nhận biên nhận đơn thuần (số PO, mã biên nhận). Không kèm cảnh báo chênh lệch — vendor xem Log Note nếu cần |
+| ~~Biên nhận được cửa hàng xác nhận (qty chênh lệch)~~ | — | — | **Bỏ email cảnh báo chênh lệch** — chỉ gửi 1 email xác nhận biên nhận đơn thuần. Vendor xem Log Note (mail.tracking.value) nếu cần biết lịch sử thay đổi `qty_done` |
 | ~~DO được admin mở khoá~~ | — | — | **Không gửi email** — không có chức năng admin unlock trên Portal (DO-LIVE-001 Blocker 6). Admin reset `scheduled_date` trên Odoo trực tiếp |
 
 > Tất cả email gửi đến nhà cung cấp tuân theo `vendor_users.preferred_language` (`vi` hoặc `en`). Email nội bộ luôn bằng tiếng Việt. Gửi email qua **AWS SES** với IAM user chuyên dụng (chỉ có quyền `ses:SendEmail`).
@@ -280,9 +280,10 @@ stateDiagram-v2
     end note
 
     note right of Done
-        Nhà cung cấp: chỉ đọc, thấy SL Giao + SL Thực Nhận (2 cột song song)
+        Nhà cung cấp: chỉ đọc, cột SL Giao đổi label thành "SL Thực Nhận"
+        (1 field qty_done, cửa hàng có thể đã ghi đè giá trị vendor nhập)
         Có thể xuất PDF/CSV
-        Gửi email nếu qty chênh lệch
+        Email xác nhận biên nhận đơn thuần (không cảnh báo chênh lệch)
     end note
 
     note right of Canceled
@@ -295,7 +296,7 @@ stateDiagram-v2
 
 ## State Machine của RO (Return Order)
 
-> **Label tiếng Việt:** 2 trạng thái duy nhất — `assigned` → **Chờ Thu Hồi**, `done` → **Đã Hoàn Thành**. **Không có Đã Huỷ** vì Odoo return picking không có state cancel độc lập.
+> **Label song ngữ (VN / EN):** 2 trạng thái duy nhất — `assigned` → **Chờ Thu Hồi (Waiting)**, `done` → **Đã Hoàn Thành (Done)**. **Không có Đã Huỷ** vì Odoo return picking không có state cancel độc lập.
 
 ```mermaid
 stateDiagram-v2
