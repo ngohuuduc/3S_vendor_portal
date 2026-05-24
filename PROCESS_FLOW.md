@@ -98,7 +98,7 @@ flowchart TD
         R3 --> R4["Nhà cung cấp in RO PDF\nBanner: 'NCC vui lòng đến lấy hàng\ntrước hạn chót (ngày trả + 7 ngày dương lịch)'"]
         R4 --> R5["Nhà cung cấp đến cửa hàng\nđể lấy hàng trả về\nCả hai ký 2 bản giấy"]
         R5 --> R6{"Cửa hàng\nxác nhận Odoo?"}
-        R6 -- Có --> R7[Trạng thái RO: Done]
+        R6 -- Có --> R7[Trạng thái RO: Đã Hoàn Thành (Done)]
         R6 -- "Quá hạn chót\n(ngày trả + 7 ngày dương lịch)" --> R8["Odoo tự xác nhận\n(scheduled action Odoo\n— TBD Odoo team)\n→ portal sync state done"]
     end
 
@@ -153,7 +153,7 @@ sequenceDiagram
     Vendor->>Portal: In RO PDF
     Vendor->>Store: Lấy hàng trả về với RO in ra (2 bản)
     Store->>Odoo: Xác nhận biên nhận trả hàng
-    Odoo->>Portal: Trạng thái RO -> Done
+    Odoo->>Portal: Trạng thái RO → Đã Hoàn Thành (Done)
 
     Note over Vendor,Store: ── Giai đoạn 6: Xuất Dữ Liệu ──
     Vendor->>Portal: Xuất PDF (riêng lẻ hoặc tổng hợp) hoặc CSV
@@ -229,11 +229,11 @@ Portal admin dùng chung bố cục giao diện với nhà cung cấp và có th
 
 Portal và Odoo duy trì **nhãn trạng thái khác nhau**. Hành vi gốc của Odoo không bao giờ bị thay đổi.
 
-| Trạng thái PO trên Portal | Trạng thái Odoo | Điều kiện kích hoạt | Nhà cung cấp có thể làm |
+| Trạng thái PO trên Portal (VN / EN) | Trạng thái Odoo | Điều kiện kích hoạt | Nhà cung cấp có thể làm |
 |---|---|---|---|
-| **Waiting** | `sent` | Cửa hàng gửi RFQ | Xác nhận hoặc Từ chối |
-| **Confirmed** | `purchase` | Nhà cung cấp xác nhận PO trên portal | Xem DO, xuất dữ liệu |
-| **Canceled** | `cancel` | Nhà cung cấp từ chối, cửa hàng hủy, hoặc tự động hủy (7 ngày sau Expected Arrival) | Chỉ đọc |
+| **Chờ Xác Nhận (Waiting)** | `sent` | Cửa hàng gửi RFQ | Xác nhận hoặc Từ chối |
+| **Đã Xác Nhận (Confirmed)** | `purchase` | Nhà cung cấp xác nhận PO trên portal | Xem DO, xuất dữ liệu |
+| **Đã Huỷ (Canceled)** | `cancel` | Nhà cung cấp từ chối, cửa hàng hủy, hoặc tự động hủy (7 ngày sau Expected Arrival) | Chỉ đọc |
 
 ---
 
@@ -350,7 +350,7 @@ stateDiagram-v2
 ## Lưu Trữ Dữ Liệu
 
 - Nhà cung cấp có thể xem dữ liệu PO trong **24 tháng** kể từ ngày tạo PO
-- Áp dụng cho **tất cả trạng thái PO**: Waiting, Confirmed, Canceled
+- Áp dụng cho **tất cả trạng thái PO**: Chờ Xác Nhận (Waiting), Đã Xác Nhận (Confirmed), Đã Huỷ (Canceled)
 - Áp dụng cho **tất cả trạng thái DO**: Mới (New), Đã Gửi (Sent), Đã Hoàn Thành (Done), Đã Huỷ (Canceled)
 - Áp dụng cho trả hàng (RPO/RO) như nhau
 - PO cũ hơn 24 tháng bị **xoá vĩnh viễn** khỏi cơ sở dữ liệu portal
