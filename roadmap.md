@@ -177,7 +177,7 @@ vendor-portal/
 | `purchase.order.line` | Các dòng sản phẩm PO | `product_id`, `name`, `product_qty`, `qty_received`, `price_unit`, `product_uom` (UoM của dòng này) |
 | `product.product` | Thông tin sản phẩm cho DO PDF | `id`, `name`, `barcode` |
 | `stock.picking` | Header Receipt | `name`, `state`, `scheduled_date`, `origin`, `move_line_ids` |
-| `stock.move.line` | Các dòng Receipt | `product_id`, `product_uom_qty`, `qty_done`, `lot_id`, `state` |
+| `stock.move.line` | Các dòng Receipt | `product_id`, `qty_done` (Portal ghi SL Giao real-time vào field này — 1 field duy nhất xuyên suốt workflow), `lot_id`, `state` |
 | `stock.warehouse` | Mã cửa hàng cho DO PDF | `code` (tên ngắn, dùng làm Mã cửa hàng trên DO in) |
 
 ### Lưu ý tên trường Odoo 16 CE
