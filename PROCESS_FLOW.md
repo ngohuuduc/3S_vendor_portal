@@ -63,9 +63,9 @@ flowchart TD
         B7 --> B7A["NCC điền lý do và nhấp 'Xác nhận'\nPortal log lý do từ chối"]
         B7A --> B8["Portal gọi button_cancel\ntrên purchase.order qua XML-RPC"]
         B8 --> B9["RFQ bị hủy trong Odoo\nstate: sent → cancel"]
-        B9 --> B10["Email đến Buyer\n(purchase.order.user_id)\nRFQ bị từ chối + lý do"]
-        B3 -- Không hành động / 7 ngày sau date_planned --> B3X["Portal tự động hủy\nbutton_cancel qua XML-RPC"]
-        B3X --> B3Y["Email đến NCC + Buyer\n(purchase.order.user_id)\nPO tự động hủy — không phản hồi"]
+        B9 --> B10["Email đến Buyer\n(user_id, fallback create_uid)\n+ Kho Nhận Hàng\n(picking_type_id.warehouse_id)\nRFQ bị từ chối + lý do"]
+        B3 -- Không hành động / 7 ngày dương lịch sau date_planned --> B3X["Portal tự động hủy\nbutton_cancel qua XML-RPC"]
+        B3X --> B3Y["Email đến NCC + Buyer\n+ Kho Nhận Hàng\nPO tự động hủy — không phản hồi"]
     end
 
     subgraph DO["Delivery Order — Vendor Portal"]
@@ -95,10 +95,10 @@ flowchart TD
     subgraph RETURNS["Quy Trình Trả Hàng"]
         R1(["Cửa hàng tạo RPO trong Odoo\nEmail gửi cho nhà cung cấp"]) --> R2["RPO xuất hiện trên portal\nqty giao pre-fill = qty đặt\n(không cần bấm Xác Nhận RPO)"]
         R2 --> R3["Nhà cung cấp chỉnh ngày nhận hàng\nKhông thể từ chối hoặc thay đổi qty"]
-        R3 --> R4["Nhà cung cấp in RN PDF\nBanner: 'NCC vui lòng đến lấy hàng\ntrước hạn chót (ngày trả + 7 ngày)'"]
+        R3 --> R4["Nhà cung cấp in RO PDF\nBanner: 'NCC vui lòng đến lấy hàng\ntrước hạn chót (ngày trả + 7 ngày dương lịch)'"]
         R4 --> R5["Nhà cung cấp đến cửa hàng\nđể lấy hàng trả về\nCả hai ký 2 bản giấy"]
         R5 --> R6{"Cửa hàng\nxác nhận Odoo?"}
-        R6 -- Có --> R7[Trạng thái RN: Done]
+        R6 -- Có --> R7[Trạng thái RO: Done]
         R6 -- "Quá hạn chót\n(ngày trả + 7 ngày dương lịch)" --> R8["Odoo tự xác nhận\n(scheduled action Odoo\n— TBD Odoo team)\n→ portal sync state done"]
     end
 
@@ -150,10 +150,10 @@ sequenceDiagram
     Store->>Odoo: Tạo RPO
     Odoo->>Vendor: Email: thông báo đơn trả hàng
     Vendor->>Portal: Xem RPO, chỉnh ngày nhận hàng (không cần xác nhận RPO)
-    Vendor->>Portal: In RN PDF
-    Vendor->>Store: Lấy hàng trả về với RN in ra (2 bản)
+    Vendor->>Portal: In RO PDF
+    Vendor->>Store: Lấy hàng trả về với RO in ra (2 bản)
     Store->>Odoo: Xác nhận biên nhận trả hàng
-    Odoo->>Portal: Trạng thái RN -> Done
+    Odoo->>Portal: Trạng thái RO -> Done
 
     Note over Vendor,Store: ── Giai đoạn 6: Xuất Dữ Liệu ──
     Vendor->>Portal: Xuất PDF (riêng lẻ hoặc tổng hợp) hoặc CSV
@@ -192,8 +192,8 @@ sequenceDiagram
 |---|---|---|---|
 | Tài khoản vendor mới được tạo (job đồng bộ) | Nhà cung cấp | Tiếng Việt (mặc định) | Vendor ID (số nguyên) + link đặt mật khẩu (hết hạn sau 24h) |
 | Yêu cầu đặt lại mật khẩu | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Link đặt lại (hết hạn sau 24h) |
-| RFQ bị từ chối bởi nhà cung cấp | **Buyer** (`purchase.order.user_id`) | Tiếng Việt | Mã RFQ, tên nhà cung cấp |
-| PO tự động hủy (7 ngày sau Expected Arrival) | Nhà cung cấp + **Buyer** | Ngôn ngữ ưa thích / Tiếng Việt | PO tự động hủy — không phản hồi trong 7 ngày |
+| RFQ bị từ chối bởi nhà cung cấp | **Buyer** (`purchase.order.user_id`, fallback `create_uid`) **+ Kho Nhận Hàng** (`purchase.order.picking_type_id.warehouse_id`) | Tiếng Việt | Mã RFQ, tên nhà cung cấp, lý do |
+| PO tự động hủy (7 ngày dương lịch sau Expected Arrival) | Nhà cung cấp + **Buyer + Kho Nhận Hàng** | Ngôn ngữ ưa thích / Tiếng Việt | PO tự động hủy — không phản hồi trong 7 ngày |
 | DO được in bởi nhà cung cấp | — | — | Không gửi email khi in |
 | Biên nhận được cửa hàng xác nhận (qty khớp) | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Xác nhận kèm số PO, mã biên nhận |
 | Biên nhận được cửa hàng xác nhận (qty chênh lệch) | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Cảnh báo kèm chi tiết chênh lệch |
@@ -238,15 +238,17 @@ Portal và Odoo duy trì **nhãn trạng thái khác nhau**. Hành vi gốc củ
 
 ## State Machine của DO
 
+> **Label tiếng Việt hiển thị trên giao diện:** 4 trạng thái — Draft → **Mới**, Locked → **Đã Gửi**, Done → **Đã Hoàn Thành**, Cancelled → **Đã Huỷ**.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> Draft : PO được xác nhận,\nOdoo tự động tạo DO
+    [*] --> Draft : PO được xác nhận,\nOdoo tự động tạo DO\n(VN: "Mới")
 
     note right of Draft
-        Vendor sửa qty_done\nvà ghi chú tổng phiếu
+        Vendor sửa qty_done\nvà ghi chú tổng phiếu\n(qty mặc định = qty đặt)
     end note
 
-    Draft --> Locked : Hạn chót: 23:00 đêm trước\nscheduled_date trên DO\n→ job push quantity_done vào stock.move.line
+    Draft --> Locked : Hạn chót: 23:00 đêm trước\nscheduled_date trên DO\n(scheduled_date − 1 ngày)\n→ push quantity_done\n(VN: "Đã Gửi")
 
     Locked --> Draft : Portal Admin mở khoá\n(nhà cung cấp được thông báo qua email)
 
@@ -289,19 +291,21 @@ stateDiagram-v2
 
 ---
 
-## State Machine của RN (Return Note)
+## State Machine của RO (Return Order)
+
+> **Label tiếng Việt:** 2 trạng thái duy nhất — `assigned` → **Chờ Thu Hồi**, `done` → **Đã Hoàn Thành**. **Không có Đã Huỷ** vì Odoo return picking không có state cancel độc lập.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Draft : RPO được cửa hàng tạo,\nRN tạo tự động\nqty giao mặc định = qty đặt
+    [*] --> ChoThuHoi : RPO được cửa hàng tạo,\nRO tạo tự động\nqty giao mặc định = qty đặt\n(VN: "Chờ Thu Hồi")
 
-    Draft --> Done : Cửa hàng xác nhận return receipt\ntrên Odoo (trước hạn chót)
+    ChoThuHoi --> DaHoanThanh : Cửa hàng xác nhận return receipt\ntrên Odoo (trước hạn chót)\n(VN: "Đã Hoàn Thành")
 
-    Draft --> Done : Quá hạn chót (ngày trả + 7 ngày dương lịch)\n→ Odoo tự xác nhận (scheduled action Odoo — TBD)\n→ portal đọc state done
+    ChoThuHoi --> DaHoanThanh : Quá hạn chót (ngày trả + 7 ngày dương lịch)\n→ Odoo tự xác nhận (scheduled action Odoo — TBD)\n→ portal đọc state done
 
-    Done --> [*]
+    DaHoanThanh --> [*]
 
-    note right of Draft
+    note right of ChoThuHoi
         Nhà cung cấp: chỉnh ngày nhận hàng, in PDF — tự do
         Không thể thay đổi số lượng, không thể từ chối
         Không cần bấm Xác Nhận RPO
@@ -311,7 +315,7 @@ stateDiagram-v2
         (KHÔNG dùng cơ chế 23:00 cutoff như DO)
     end note
 
-    note right of Done
+    note right of DaHoanThanh
         Trả hàng hoàn tất — có thể do:
         (a) cửa hàng xác nhận trên Odoo, hoặc
         (b) Odoo tự xác nhận sau hạn chót
@@ -323,19 +327,19 @@ stateDiagram-v2
 
 ---
 
-## Trả Hàng: RPO & Return Note (Biên Bản Trả Hàng)
+## Trả Hàng: RPO & Return Order (Biên Bản Trả Hàng)
 
 | Khái niệm | Quy trình mua hàng | Quy trình trả hàng |
 |---|---|---|
 | Đơn hàng | PO (Purchase Order) | RPO (Return Purchase Order) |
-| Chứng từ giao nhận | DO (Delivery Order) | RN (Return Note / Biên Bản Trả Hàng) |
+| Chứng từ giao nhận | DO (Delivery Order) | RO (Return Order / Biên Bản Trả Hàng) |
 | Nhà cung cấp có thể chỉnh sửa | Số lượng giao (chỉ giảm, không tăng vượt qty đặt; đúng decimal UoM: kg/lít/mét → 2 chữ số thập phân, còn lại (gram, thùng, chai, cái, hộp, units) → số nguyên). Ngày giao cố định từ PO | Chỉ ngày nhận hàng (không thay đổi qty hay UoM) |
 | Số lượng giao mặc định | = Số lượng đặt (pre-fill khi PO confirmed) | = Số lượng đặt (pre-fill khi RPO được tạo) |
 | Nhà cung cấp cần xác nhận | Có (bấm "Xác Nhận" PO) | Không (không cần bấm xác nhận RPO) |
 | Hạn chót / cơ chế khoá | 23:00 đêm trước `scheduled_date` → DO Locked, vendor chỉ đọc | Ngày trả hàng dự kiến + **7 ngày dương lịch** → **Odoo tự xác nhận trả hàng** (scheduled action Odoo, **TBD phía Odoo team**); portal chỉ đọc state `done` và reflect |
 | Banner/note hạn chót | "Phiếu giao nhận bị khoá lúc 23:00 ngày dd/mm/yyyy" | **"Nhà cung cấp vui lòng đến lấy hàng trước hạn chót (dd/mm/yyyy)"** |
 | Chữ ký điện tử | Không — chỉ in PDF | Không — chỉ in PDF |
-| PDF có thể in | Có (DO PDF, in nhiều lần) | Có (RN PDF, cùng định dạng) |
+| PDF có thể in | Có (DO PDF, in nhiều lần) | Có (RO PDF, cùng định dạng) |
 | Trao đổi vật lý | Nhà cung cấp giao hàng đến cửa hàng | Nhà cung cấp lấy hàng từ cửa hàng |
 
 ---
@@ -345,7 +349,7 @@ stateDiagram-v2
 - Nhà cung cấp có thể xem dữ liệu PO trong **24 tháng** kể từ ngày tạo PO
 - Áp dụng cho **tất cả trạng thái PO**: Waiting, Confirmed, Canceled
 - Áp dụng cho **tất cả trạng thái DO**: Draft, Locked, Done, Canceled
-- Áp dụng cho trả hàng (RPO/RN) như nhau
+- Áp dụng cho trả hàng (RPO/RO) như nhau
 - PO cũ hơn 24 tháng bị **xoá vĩnh viễn** khỏi cơ sở dữ liệu portal
 - Một scheduled cleanup job chạy định kỳ để thực thi quy tắc này
 
@@ -358,7 +362,7 @@ stateDiagram-v2
 - CSV: dữ liệu hàng loạt để nhà cung cấp chỉnh sửa và nhập vào hệ thống của họ
 - Giao diện hỗ trợ chọn một hoặc nhiều bản ghi để xuất
 - Có bộ lọc theo khoảng ngày
-- Bao gồm cả PO/DO thông thường lẫn trả hàng (RPO/RN)
+- Bao gồm cả PO/DO thông thường lẫn trả hàng (RPO/RO)
 
 ---
 
@@ -367,7 +371,7 @@ stateDiagram-v2
 | # | Chủ đề | Chi tiết | Trả lời |
 |---|---|---|---|
 | 1 | **Hai job 23:00 chạy cùng lúc** | Job cutoff (lock DO + push Odoo) và job nightly sync (check receipt confirmed → DO Done) đều chạy lúc 23:00. Nếu cửa hàng đã confirm receipt trước 23:00 mà DO vẫn Draft → thứ tự xử lý thế nào? DO đi Draft → Locked → Done hay Draft → Done? |DO được cập nhật theo thời gian thực; sau 23PM trước ngày giao hàng dự kiến NCC chỉ có thể xem DO chứ không được chỉnh sửa (lock trên Portal); Confirmed và Validate (Ready--> Done ---> Draft) là hành động của phía của hàng trên Odoo: Không có Job Sync vì **theo thời gian thực** | 
-| 2 | **RN có cần Unlock không?** | DO có cơ chế Unlock (admin mở khoá Locked → Draft). RN hiện không có. Nếu ngày nhận hàng sai sau 23:00 cutoff, có cách sửa không? | Unlock xảy ra trên Odoo không xảy trên portal và hiện tại quy trình không phân định NCC được chỉnh sửa cái gì.  | 
+| 2 | **RO có cần Unlock không?** | DO có cơ chế Unlock (admin mở khoá Locked → Draft). RO hiện không có. Nếu ngày nhận hàng sai sau 23:00 cutoff, có cách sửa không? | Unlock xảy ra trên Odoo không xảy trên portal và hiện tại quy trình không phân định NCC được chỉnh sửa cái gì.  | 
 
 ---
 
@@ -377,7 +381,7 @@ stateDiagram-v2
 |---|---|
 | NCC | Nhà cung cấp (Vendor) |
 | DO | Delivery Order — chứng từ giao hàng của nhà cung cấp, được chỉnh sửa và in trên portal |
-| RN | Return Note / Biên Bản Trả Hàng — tương đương DO cho quy trình trả hàng, được nhà cung cấp in |
+| RO | Return Order / Biên Bản Trả Hàng — tương đương DO cho quy trình trả hàng, được nhà cung cấp in |
 | Receipt | Phiếu nhập kho — bản ghi hàng nhập trong Odoo, được xác nhận bởi cửa hàng |
 | RPO | Return Purchase Order — tương đương PO cho quy trình trả hàng, do cửa hàng tạo |
 | SL | Số lượng (Quantity) |
