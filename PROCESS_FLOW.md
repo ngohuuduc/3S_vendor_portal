@@ -83,7 +83,7 @@ flowchart TD
 
     subgraph STORE_CONFIRM["Xác Nhận Biên Nhận — Odoo"]
         E1["Cửa hàng xác nhận Receipt\nqty_done finalized\nstock move được tạo"] --> E2["Portal live query Odoo\nDO → Đã Hoàn Thành (Done)\n(real-time, không nightly sync)"]
-        E2 --> E3["Email đến nhà cung cấp\nXác nhận biên nhận (đơn thuần)\nKhông kèm cảnh báo chênh lệch"]
+        E2 --> E3["Email đến nhà cung cấp\n(do ODOO gửi trực tiếp)\nXác nhận biên nhận đơn thuần\nResent mỗi lần re-confirm picking"]
     end
 
     subgraph UNLOCK["Ngoại Lệ: Mở Khoá DO (qua Odoo, KHÔNG qua Portal)"]
@@ -144,7 +144,7 @@ sequenceDiagram
     Store->>Odoo: Xem xét Receipt, điều chỉnh số lượng nếu hàng hư
     Store->>Odoo: Xác nhận Receipt — qty_done finalized
     Odoo->>Portal: Portal live query (real-time) — DO → Đã Hoàn Thành
-    Portal->>Vendor: Email: xác nhận biên nhận (đơn thuần, không cảnh báo chênh lệch — Log Note hiển thị lịch sử thay đổi qty_done nếu cần)
+    Odoo->>Vendor: Email: xác nhận biên nhận (Odoo gửi trực tiếp, đơn thuần, không cảnh báo chênh lệch; resent mỗi lần re-confirm). Log Note trên Portal hiển thị lịch sử qty_done
 
     Note over Vendor,Store: ── Giai đoạn 5: Trả Hàng ──
     Store->>Odoo: Tạo RPO
@@ -196,7 +196,7 @@ sequenceDiagram
 | RFQ bị từ chối bởi nhà cung cấp | **Buyer** (`purchase.order.user_id`, fallback `create_uid`) **+ Kho Nhận Hàng** (`purchase.order.picking_type_id.warehouse_id`) | Tiếng Việt | Mã RFQ, tên nhà cung cấp, lý do |
 | PO tự động hủy (7 ngày dương lịch sau Expected Arrival) | Nhà cung cấp + **Buyer + Kho Nhận Hàng** | Ngôn ngữ ưa thích / Tiếng Việt | PO tự động hủy — không phản hồi trong 7 ngày |
 | DO được in bởi nhà cung cấp | — | — | Không gửi email khi in |
-| Biên nhận được cửa hàng xác nhận | Nhà cung cấp | Ngôn ngữ ưa thích của nhà cung cấp | Xác nhận biên nhận đơn thuần (số PO, mã biên nhận). Không kèm cảnh báo chênh lệch — vendor xem Log Note nếu cần |
+| Biên nhận được cửa hàng xác nhận | Nhà cung cấp | Tiếng Việt (Odoo native) | **Email do Odoo gửi trực tiếp** (không phải Portal). Gửi mỗi lần cửa hàng confirm picking — bao gồm re-confirm sau khi reopen. Đơn thuần, không cảnh báo chênh lệch |
 | ~~Biên nhận được cửa hàng xác nhận (qty chênh lệch)~~ | — | — | **Bỏ email cảnh báo chênh lệch** — chỉ gửi 1 email xác nhận biên nhận đơn thuần. Vendor xem Log Note (mail.tracking.value) nếu cần biết lịch sử thay đổi `qty_done` |
 | ~~DO được admin mở khoá~~ | — | — | **Không gửi email** — không có chức năng admin unlock trên Portal (DO-LIVE-001 Blocker 6). Admin reset `scheduled_date` trên Odoo trực tiếp |
 
